@@ -41,8 +41,6 @@ final class ChatWebSocketServer {
     private static final int OPCODE_PING = 0x9;
     private static final int OPCODE_PONG = 0xA;
 
-    private static final int MAX_NAME_LENGTH = 32;
-
     /** The page a browser gets when it opens the port as plain HTTP. */
     private static final String PAGE = """
             <!doctype html>
@@ -51,28 +49,34 @@ final class ChatWebSocketServer {
             <style>
               body { font: 15px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 1rem; }
               #log { border: 1px solid #ddd; border-radius: 4px; padding: .5rem; height: 60vh; overflow-y: auto; }
+              #log .notice { color: #888; }
+              #log .mention { font-weight: 600; }
               form { margin-top: .5rem; }
               input { width: 100%; box-sizing: border-box; padding: .4rem; font: inherit; }
             </style>
             <h1>chat</h1>
             <div id="log"></div>
             <form id="form">
-              <input id="text" autocomplete="off" placeholder="type a name, then messages" autofocus>
+              <input id="text" autocomplete="off" placeholder="a name, then messages or /help" autofocus>
             </form>
             <script>
               const log = document.getElementById("log");
               const input = document.getElementById("text");
-              function line(text) {
+              function line(text, className) {
                 const div = document.createElement("div");
                 div.textContent = text;
+                if (className) div.className = className;
                 log.append(div);
                 log.scrollTop = log.scrollHeight;
               }
               const proto = location.protocol === "https:" ? "wss:" : "ws:";
               const ws = new WebSocket(proto + "//" + location.host);
-              ws.onopen = function () { line("(connected - type a name and press enter)"); };
-              ws.onmessage = function (event) { line(event.data); };
-              ws.onclose = function () { line("(disconnected - reload to reconnect)"); };
+              ws.onopen = function () { line("(connected - type a name and press enter)", "notice"); };
+              ws.onmessage = function (event) {
+                const text = event.data;
+                line(text, text.startsWith("*") || text.startsWith("[dm]") ? "notice" : null);
+              };
+              ws.onclose = function () { line("(disconnected - reload to reconnect)", "notice"); };
               document.getElementById("form").addEventListener("submit", function (event) {
                 event.preventDefault();
                 if (!input.value.trim()) return;
@@ -82,7 +86,7 @@ final class ChatWebSocketServer {
             </script>
             """;
 
-    static void run(int port, Room room) throws IOException {
+    static void run(int port, Hub hub) throws IOException {
         ServerSocket server = new ServerSocket();
         server.setReuseAddress(true);
         server.bind(new InetSocketAddress(HOST, port), 16);
@@ -91,11 +95,11 @@ final class ChatWebSocketServer {
         while (true) {
             Socket conn = server.accept();
             // Virtual threads are always daemon threads.
-            Thread.ofVirtual().name("ws-" + conn.getRemoteSocketAddress()).start(() -> handle(conn, room));
+            Thread.ofVirtual().name("ws-" + conn.getRemoteSocketAddress()).start(() -> handle(conn, hub));
         }
     }
 
-    private static void handle(Socket conn, Room room) {
+    private static void handle(Socket conn, Hub hub) {
         try {
             byte[] block = readHeaderBlock(conn.getInputStream());
             if (block == null) {
@@ -114,7 +118,7 @@ final class ChatWebSocketServer {
             String key = request.headers.get("sec-websocket-key");
             String upgrade = request.headers.getOrDefault("upgrade", "");
             if (key != null && !key.isBlank() && upgrade.toLowerCase(Locale.ROOT).contains("websocket")) {
-                upgrade(conn, room, key, request.headers.get("sec-websocket-version"));
+                upgrade(conn, hub, key, request.headers.get("sec-websocket-version"));
             } else {
                 servePage(conn);
             }
@@ -167,7 +171,7 @@ final class ChatWebSocketServer {
         return request;
     }
 
-    private static void upgrade(Socket conn, Room room, String key, String version) throws IOException {
+    private static void upgrade(Socket conn, Hub hub, String key, String version) throws IOException {
         OutputStream out = conn.getOutputStream();
         if (!"13".equals(version)) {
             writeAll(out, "HTTP/1.1 426 Upgrade Required\r\n"
@@ -182,13 +186,12 @@ final class ChatWebSocketServer {
                 + "Upgrade: websocket\r\n"
                 + "Connection: Upgrade\r\n"
                 + "Sec-WebSocket-Accept: " + accept + "\r\n\r\n");
-        converse(conn, room, out);
+        converse(conn, hub, out);
     }
 
     /** The frame loop: one virtual thread per connection, like the TCP transport. */
-    private static void converse(Socket conn, Room room, OutputStream out) {
-        String name = "anon";
-        WsPeer peer = null;
+    private static void converse(Socket conn, Hub hub, OutputStream out) {
+        Session session = null;
         ByteArrayOutputStream message = new ByteArrayOutputStream();
         int messageOpcode = 0;
         try {
@@ -241,15 +244,15 @@ final class ChatWebSocketServer {
                 if (text.isEmpty()) {
                     continue;
                 }
-                if (peer == null) {
+                if (session == null) {
                     // The first message is the display name, just like TCP/UDP.
-                    name = text.length() > MAX_NAME_LENGTH ? text.substring(0, MAX_NAME_LENGTH) : text;
-                    peer = new WsPeer(name, out);
-                    room.join(peer);
+                    session = hub.connect(new WsPeer(out), text);
                 } else {
-                    room.broadcast(name + ": " + text);
+                    hub.input(session, text);
                 }
             }
+        } catch (Hub.Quit ignored) {
+            // The user typed /quit; fall through to teardown.
         } catch (WebSocketException e) {
             // Best effort: tell the client why before the socket closes.
             try {
@@ -258,8 +261,8 @@ final class ChatWebSocketServer {
             }
         } catch (IOException ignored) {
         } finally {
-            if (peer != null) {
-                room.leave(peer);
+            if (session != null) {
+                hub.disconnect(session);
             }
             try {
                 conn.close();
@@ -417,17 +420,10 @@ final class ChatWebSocketServer {
 
     /** A peer backed by a WebSocket connection. */
     private static final class WsPeer implements Peer {
-        private final String name;
         private final OutputStream out;
 
-        WsPeer(String name, OutputStream out) {
-            this.name = name;
+        WsPeer(OutputStream out) {
             this.out = out;
-        }
-
-        @Override
-        public String name() {
-            return name;
         }
 
         @Override

@@ -1,33 +1,40 @@
-import java.io.IOException;
+import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * The single chat room: every joined peer, whatever transport it used.
+ * A named room: the set of sessions currently in it, whatever transport each
+ * arrived on.
  *
- * <p>Peers live in a {@link CopyOnWriteArrayList} so {@link #broadcast} walks a
- * stable snapshot while other threads join and leave, and so evicting one peer
- * after a write failure does not disturb the rest.
+ * <p>Members live in a {@link CopyOnWriteArrayList} so {@link #members()} walks a
+ * stable snapshot while other threads join, leave, and are evicted after a write
+ * failure. Delivery and eviction live in {@link Hub}, so a room is only a set.
  */
 final class Room {
-    private final CopyOnWriteArrayList<Peer> peers = new CopyOnWriteArrayList<>();
+    private final String name;
+    private final CopyOnWriteArrayList<Session> members = new CopyOnWriteArrayList<>();
 
-    void join(Peer peer) {
-        peers.add(peer);
-        System.out.println("[server] " + peer.name() + " connected");
+    Room(String name) {
+        this.name = name;
     }
 
-    void leave(Peer peer) {
-        peers.remove(peer);
-        System.out.println("[server] " + peer.name() + " disconnected");
+    String name() {
+        return name;
     }
 
-    void broadcast(String line) {
-        for (Peer peer : peers) {
-            try {
-                peer.send(line);
-            } catch (IOException e) {
-                peers.remove(peer);
-            }
-        }
+    void add(Session session) {
+        members.add(session);
+    }
+
+    boolean remove(Session session) {
+        return members.remove(session);
+    }
+
+    /** A live snapshot; safe to iterate while the room changes underneath. */
+    List<Session> members() {
+        return members;
+    }
+
+    int size() {
+        return members.size();
     }
 }
