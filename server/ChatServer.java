@@ -185,9 +185,13 @@ public class ChatServer {
 
     public static void main(String[] args) throws IOException {
         boolean udp = false;
+        boolean webSocket = false;
         int ai = 0;
         if (args.length > 0 && (args[0].equals("-u") || args[0].equals("--udp"))) {
             udp = true;
+            ai = 1;
+        } else if (args.length > 0 && (args[0].equals("-w") || args[0].equals("--websocket"))) {
+            webSocket = true;
             ai = 1;
         }
         int port = DEFAULT_PORT;
@@ -195,13 +199,15 @@ public class ChatServer {
             try {
                 port = Integer.parseInt(args[ai]);
             } catch (NumberFormatException e) {
-                System.err.println("Usage: java ChatServer [-u] [port]");
+                System.err.println("Usage: java ChatServer [-u|-w] [port]");
                 System.exit(1);
             }
         }
         Room room = new Room();
         if (udp) {
             runUdp(port, room);
+        } else if (webSocket) {
+            ChatWebSocketServer.run(port, room);
         } else {
             runTcp(port, room);
         }

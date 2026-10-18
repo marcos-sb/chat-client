@@ -17,6 +17,7 @@ scripts/build.sh
 scripts/server.sh
 scripts/server.sh 5100     # custom port
 scripts/server.sh -u       # UDP
+scripts/server.sh -w       # WebSocket, plus a browser page on the same port
 
 # client — run one per person, in separate terminals
 scripts/client.sh
@@ -49,6 +50,14 @@ and supports TCP and UDP (`java ChatServer [-u] [port]`). Each connection is
 served by a virtual thread, so the server holds many thousands of idle clients
 without one OS thread per client (requires JDK 21+; developed on JDK 24).
 
+### WebSocket
+
+`scripts/server.sh -w` speaks RFC 6455 WebSocket and serves a small browser page
+on the same port, so opening `http://127.0.0.1:5000` gives you a chat client
+with no extra tooling. The first message is the display name, as with TCP/UDP.
+The server runs one transport at a time; the WebSocket layer is hand-rolled, so
+there are no dependencies and the GraalVM native build needs no configuration.
+
 ## Native build (optional, GraalVM)
 
 ```sh
@@ -62,8 +71,11 @@ The scripts always run the JVM classes; run `build/chatclient` and
 ## Layout
 
 ```
-ChatClient.java        the client
-server/ChatServer.java the server (TCP + UDP)
-scripts/               build.sh, server.sh, client.sh
-build/                 compiled classes + native binaries (gitignored)
+ChatClient.java                  the client
+server/ChatServer.java           the server CLI + TCP and UDP transports
+server/ChatWebSocketServer.java  hand-rolled RFC 6455 transport + browser page
+server/Peer.java                 one participant, whatever the transport
+server/Room.java                 the shared room: peers and broadcast
+scripts/                         build.sh, server.sh, client.sh
+build/                           compiled classes + native binaries (gitignored)
 ```
