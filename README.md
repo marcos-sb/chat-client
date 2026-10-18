@@ -45,7 +45,9 @@ the server isn't running it exits with:
 ```
 
 The server speaks the same protocol, caps names at 32 chars (default `anon`),
-and supports TCP and UDP (`java ChatServer [-u] [port]`).
+and supports TCP and UDP (`java ChatServer [-u] [port]`). Each connection is
+served by a virtual thread, so the server holds many thousands of idle clients
+without one OS thread per client (requires JDK 21+; developed on JDK 24).
 
 ## Native build (optional, GraalVM)
 

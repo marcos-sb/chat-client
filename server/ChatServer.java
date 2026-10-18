@@ -91,7 +91,7 @@ public class ChatServer {
         socket.setReceiveBufferSize(UDP_SOCKET_BUFFER_BYTES);
         ConcurrentHashMap<SocketAddress, UdpClient> clients = new ConcurrentHashMap<>();
         System.out.println("[server] listening on " + HOST + ":" + port + " (udp)");
-        Thread pruner = new Thread(() -> {
+        Thread.ofVirtual().name("udp-pruner").start(() -> {
             while (true) {
                 try {
                     Thread.sleep(UDP_PRUNE_INTERVAL_MS);
@@ -107,8 +107,6 @@ public class ChatServer {
                 }
             }
         });
-        pruner.setDaemon(true);
-        pruner.start();
         byte[] buf = new byte[UDP_BUFFER_SIZE];
         while (true) {
             DatagramPacket packet = new DatagramPacket(buf, buf.length);
@@ -147,9 +145,8 @@ public class ChatServer {
         System.out.println("[server] listening on " + HOST + ":" + port);
         while (true) {
             Socket conn = server.accept();
-            Thread t = new Thread(() -> handle(conn));
-            t.setDaemon(true);
-            t.start();
+            // Virtual threads are always daemon threads.
+            Thread.ofVirtual().name("tcp-" + conn.getRemoteSocketAddress()).start(() -> handle(conn));
         }
     }
 

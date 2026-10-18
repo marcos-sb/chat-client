@@ -28,7 +28,7 @@ public class ChatClient {
         }
         byte[] payload = name.getBytes(StandardCharsets.UTF_8);
         sock.send(new DatagramPacket(payload, payload.length, server));
-        Thread receiver = new Thread(() -> {
+        Thread.ofVirtual().name("udp-receiver").start(() -> {
             try {
                 while (true) {
                     byte[] buf = new byte[UDP_BUFFER_SIZE];
@@ -39,8 +39,6 @@ public class ChatClient {
             } catch (IOException ignored) {
             }
         });
-        receiver.setDaemon(true);
-        receiver.start();
         try {
             String line;
             while ((line = stdin.readLine()) != null) {
@@ -72,7 +70,7 @@ public class ChatClient {
             BufferedWriter out = new BufferedWriter(new OutputStreamWriter(sock.getOutputStream(), StandardCharsets.UTF_8));
             out.write(name + "\n");
             out.flush();
-            Thread receiver = new Thread(() -> {
+            Thread.ofVirtual().name("tcp-receiver").start(() -> {
                 try {
                     BufferedReader in = new BufferedReader(new InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8));
                     String l;
@@ -82,8 +80,6 @@ public class ChatClient {
                 } catch (IOException ignored) {
                 }
             });
-            receiver.setDaemon(true);
-            receiver.start();
             String line;
             while ((line = stdin.readLine()) != null) {
                 out.write(line + "\n");
