@@ -24,72 +24,113 @@ public class ChatServer {
 
     private static final int UDP_SOCKET_BUFFER_BYTES = 4 * 1024 * 1024;
 
-    private static final ConcurrentHashMap<Socket, Client> clients = new ConcurrentHashMap<>();
+    private static final int MAX_NAME_LENGTH = 32;
 
-    private static final class Client {
-        final String name;
-        final BufferedWriter writer;
+    /** A TCP connection: its name, its socket, and a writer guarded by that peer's monitor. */
+    private static final class TcpPeer implements Peer {
+        private final String name;
+        private final Socket socket;
+        private final BufferedWriter writer;
 
-        Client(String name, BufferedWriter writer) {
+        TcpPeer(String name, Socket socket, BufferedWriter writer) {
             this.name = name;
+            this.socket = socket;
             this.writer = writer;
         }
-    }
 
-    private static final class UdpClient {
-        String name;
-        long lastSeen;
-    }
+        @Override
+        public String name() {
+            return name;
+        }
 
-    private static void broadcast(String text) {
-        for (Map.Entry<Socket, Client> e : new ArrayList<>(clients.entrySet())) {
+        @Override
+        public void send(String line) throws IOException {
+            synchronized (writer) {
+                writer.write(line + "\n");
+                writer.flush();
+            }
+        }
+
+        void close() {
             try {
-                synchronized (e.getValue().writer) {
-                    e.getValue().writer.write(text + "\n");
-                    e.getValue().writer.flush();
-                }
-            } catch (IOException ex) {
-                clients.remove(e.getKey());
+                socket.close();
+            } catch (IOException ignored) {
             }
         }
     }
 
-    private static void handle(Socket conn) {
+    /** A UDP address that has sent us datagrams recently; idle ones are pruned. */
+    private static final class UdpPeer implements Peer {
+        private final String name;
+        private final SocketAddress address;
+        private final DatagramSocket socket;
+        private volatile long lastSeen;
+
+        UdpPeer(String name, SocketAddress address, DatagramSocket socket) {
+            this.name = name;
+            this.address = address;
+            this.socket = socket;
+            this.lastSeen = System.currentTimeMillis();
+        }
+
+        @Override
+        public String name() {
+            return name;
+        }
+
+        @Override
+        public void send(String line) throws IOException {
+            byte[] payload = line.getBytes(StandardCharsets.UTF_8);
+            socket.send(new DatagramPacket(payload, payload.length, address));
+        }
+
+        void touch() {
+            lastSeen = System.currentTimeMillis();
+        }
+    }
+
+    private static String truncate(String name) {
+        return name.length() > MAX_NAME_LENGTH ? name.substring(0, MAX_NAME_LENGTH) : name;
+    }
+
+    private static void handle(Socket conn, Room room) {
         String name = "anon";
+        TcpPeer peer = null;
         try {
             BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
             String line;
             while ((line = reader.readLine()) != null) {
                 String candidate = line.strip();
                 if (!candidate.isEmpty()) {
-                    name = candidate.length() > 32 ? candidate.substring(0, 32) : candidate;
+                    name = truncate(candidate);
                     break;
                 }
             }
             BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(conn.getOutputStream(), StandardCharsets.UTF_8));
-            clients.put(conn, new Client(name, writer));
-            System.out.println("[server] " + name + " connected");
+            peer = new TcpPeer(name, conn, writer);
+            room.join(peer);
             while ((line = reader.readLine()) != null) {
                 String trimmed = line.strip();
                 if (!trimmed.isEmpty()) {
-                    broadcast(name + ": " + trimmed);
+                    room.broadcast(name + ": " + trimmed);
                 }
             }
         } catch (IOException ignored) {
         } finally {
-            clients.remove(conn);
+            if (peer != null) {
+                room.leave(peer);
+            }
             try {
                 conn.close();
             } catch (IOException ignored) {
             }
-            System.out.println("[server] " + name + " disconnected");
         }
     }
 
-    private static void runUdp(int port) throws IOException {
+    private static void runUdp(int port, Room room) throws IOException {
         DatagramSocket socket = new DatagramSocket(new InetSocketAddress(HOST, port));
         socket.setReceiveBufferSize(UDP_SOCKET_BUFFER_BYTES);
-        ConcurrentHashMap<SocketAddress, UdpClient> clients = new ConcurrentHashMap<>();
+        Map<SocketAddress, UdpPeer> peers = new ConcurrentHashMap<>();
         System.out.println("[server] listening on " + HOST + ":" + port + " (udp)");
         Thread.ofVirtual().name("udp-pruner").start(() -> {
             while (true) {
@@ -99,10 +140,12 @@ public class ChatServer {
                     return;
                 }
                 long now = System.currentTimeMillis();
-                for (Map.Entry<SocketAddress, UdpClient> e : new ArrayList<>(clients.entrySet())) {
+                for (Map.Entry<SocketAddress, UdpPeer> e : new ArrayList<>(peers.entrySet())) {
                     if (now - e.getValue().lastSeen > UDP_IDLE_TIMEOUT_MS) {
-                        System.out.println("[server] " + e.getValue().name + " disconnected");
-                        clients.remove(e.getKey());
+                        UdpPeer peer = peers.remove(e.getKey());
+                        if (peer != null) {
+                            room.leave(peer);
+                        }
                     }
                 }
             }
@@ -116,29 +159,19 @@ public class ChatServer {
                 continue;
             }
             SocketAddress addr = packet.getSocketAddress();
-            UdpClient c = clients.get(addr);
-            if (c == null) {
-                String name = text.length() > 32 ? text.substring(0, 32) : text;
-                UdpClient uc = new UdpClient();
-                uc.name = name;
-                uc.lastSeen = System.currentTimeMillis();
-                clients.put(addr, uc);
-                System.out.println("[server] " + name + " connected");
+            UdpPeer peer = peers.get(addr);
+            if (peer == null) {
+                peer = new UdpPeer(truncate(text), addr, socket);
+                peers.put(addr, peer);
+                room.join(peer);
             } else {
-                c.lastSeen = System.currentTimeMillis();
-                byte[] payload = (c.name + ": " + text).getBytes(StandardCharsets.UTF_8);
-                for (Map.Entry<SocketAddress, UdpClient> e : new ArrayList<>(clients.entrySet())) {
-                    try {
-                        socket.send(new DatagramPacket(payload, payload.length, e.getKey()));
-                    } catch (IOException ex) {
-                        clients.remove(e.getKey());
-                    }
-                }
+                peer.touch();
+                room.broadcast(peer.name() + ": " + text);
             }
         }
     }
 
-    private static void runTcp(int port) throws IOException {
+    private static void runTcp(int port, Room room) throws IOException {
         ServerSocket server = new ServerSocket();
         server.setReuseAddress(true);
         server.bind(new InetSocketAddress(HOST, port), 16);
@@ -146,7 +179,7 @@ public class ChatServer {
         while (true) {
             Socket conn = server.accept();
             // Virtual threads are always daemon threads.
-            Thread.ofVirtual().name("tcp-" + conn.getRemoteSocketAddress()).start(() -> handle(conn));
+            Thread.ofVirtual().name("tcp-" + conn.getRemoteSocketAddress()).start(() -> handle(conn, room));
         }
     }
 
@@ -166,10 +199,11 @@ public class ChatServer {
                 System.exit(1);
             }
         }
+        Room room = new Room();
         if (udp) {
-            runUdp(port);
+            runUdp(port, room);
         } else {
-            runTcp(port);
+            runTcp(port, room);
         }
     }
 }

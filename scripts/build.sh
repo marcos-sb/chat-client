@@ -8,5 +8,5 @@ ROOT=$(dirname "$HERE")
 BUILD="$ROOT/build"
 
 mkdir -p "$BUILD"
-javac -d "$BUILD" "$ROOT/ChatClient.java" "$ROOT/server/ChatServer.java"
+javac -d "$BUILD" "$ROOT/ChatClient.java" "$ROOT"/server/*.java
 echo "compiled client + server into build/" >&2
