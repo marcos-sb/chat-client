@@ -137,6 +137,10 @@ public class ChatClient {
             System.exit(1);
             return;
         }
+        // Chat lines are small and sent one at a time, so Nagle's algorithm
+        // would hold them back waiting for an ack. Turning it off makes a
+        // keystroke's worth of text leave immediately.
+        sock.setTcpNoDelay(true);
 
         // A listener is the peer's half of a direct link; the server supplies the
         // other half by telling a peer where to reach us.
@@ -212,6 +216,7 @@ public class ChatClient {
     /** An inbound link: the dialer sends its nick as the first line. */
     private static void accept(Socket peer) {
         try {
+            peer.setTcpNoDelay(true);
             BufferedReader in = new BufferedReader(new InputStreamReader(peer.getInputStream(), StandardCharsets.UTF_8));
             BufferedWriter out = new BufferedWriter(new OutputStreamWriter(peer.getOutputStream(), StandardCharsets.UTF_8));
             String nick = in.readLine();
@@ -240,7 +245,12 @@ public class ChatClient {
             return;
         }
         try {
-            Socket peer = new Socket(hostPort.substring(0, colon), Integer.parseInt(hostPort.substring(colon + 1)));
+            Socket peer = new Socket();
+            // Set the option before connecting, so the handshake is not delayed
+            // either.
+            peer.setTcpNoDelay(true);
+            peer.connect(new InetSocketAddress(hostPort.substring(0, colon),
+                    Integer.parseInt(hostPort.substring(colon + 1))));
             BufferedWriter out = new BufferedWriter(new OutputStreamWriter(peer.getOutputStream(), StandardCharsets.UTF_8));
             BufferedReader in = new BufferedReader(new InputStreamReader(peer.getInputStream(), StandardCharsets.UTF_8));
             out.write(me + "\n");
