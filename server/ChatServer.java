@@ -41,6 +41,12 @@ public class ChatServer {
                 writer.flush();
             }
         }
+
+        /** TCP clients are line-oriented and may hold a listener, so they can. */
+        @Override
+        public boolean supportsControl() {
+            return true;
+        }
     }
 
     /** A UDP address that has sent us datagrams recently; idle ones are pruned. */

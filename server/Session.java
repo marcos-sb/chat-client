@@ -15,6 +15,8 @@ final class Session {
     private final AtomicBoolean gone = new AtomicBoolean();
     private volatile String nick;
     private volatile Room room;
+    /** The {@code host:port} this client accepts direct links on, or null. */
+    private volatile String link;
 
     Session(Peer peer, String nick, Room room) {
         this.peer = peer;
@@ -40,6 +42,14 @@ final class Session {
 
     void room(Room room) {
         this.room = room;
+    }
+
+    String link() {
+        return link;
+    }
+
+    void link(String link) {
+        this.link = link;
     }
 
     void send(String line) throws IOException {

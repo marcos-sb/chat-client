@@ -11,4 +11,13 @@ import java.io.IOException;
 interface Peer {
     /** Deliver one already-formatted chat line, framed for this transport. */
     void send(String line) throws IOException;
+
+    /**
+     * Whether this transport can act on control lines — the server talking to a
+     * client rather than relaying chat to it. Transports that cannot (the
+     * browser page, UDP) never receive them.
+     */
+    default boolean supportsControl() {
+        return false;
+    }
 }

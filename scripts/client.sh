@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run the chat client, compiling first if needed.
-# Usage: scripts/client.sh [-u] [port]      (default: TCP to port 5000)
+# Usage: scripts/client.sh [-u] [-p|--p2p] [port]   (default: TCP to port 5000)
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/_java.sh"

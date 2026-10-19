@@ -24,11 +24,12 @@ scripts/server.sh -w       # WebSocket, plus a browser page on the same port
 scripts/client.sh
 scripts/client.sh 5100
 scripts/client.sh -u
+scripts/client.sh --p2p     # opens a listener for direct (peer-to-peer) links
 ```
 
-The run scripts take the same `[-u] [port]` arguments as the classes and
-recompile automatically if a source file is newer than its `.class`. They find
-a JDK via `JAVA_HOME`, then `PATH`, then a local SDKMAN install.
+The run scripts take the same arguments as the classes and recompile
+automatically if a source file is newer than its `.class`. They find a JDK via
+`JAVA_HOME`, then `PATH`, then a local SDKMAN install.
 
 Prefer the raw commands? They're equivalent:
 
@@ -38,7 +39,7 @@ java -cp build ChatServer
 java -cp build ChatClient
 ```
 
-Usage: `java ChatClient [-u] [port]`. On start it prompts `Name: `, sends the
+Usage: `java ChatClient [-u] [-p|--p2p] [port]`. On start it prompts `Name: `, sends the
 name, then prints incoming lines while forwarding your input to the room. If
 the server isn't running it exits with:
 
@@ -74,6 +75,7 @@ Everyone starts in `#lobby`. A line beginning with `/` is a command:
 | `/rooms` | list rooms and their member counts |
 | `/who` | list who is in your current room |
 | `/msg <name> <text>` | private message (aliases `/dm`, `/whisper`) |
+| `/link <name>` | ask the server to introduce you for a direct link (see below, TCP only) |
 | `/me <action>` | emote (`* alice waves`) |
 | `/quit` | disconnect |
 
@@ -82,6 +84,39 @@ letters, digits, and `. _ -`. Joins, parts, and nick changes are announced to th
 affected rooms (`* alice joined #dev`), and empty non-default rooms are dropped.
 All three transports share this behavior because they all route through
 `server/Hub.java`.
+
+## Direct (peer-to-peer) messages
+
+Run a TCP client with `--p2p` and it opens a local listener, then advertises it
+to the server with `/listen`. When two such clients are on the same server,
+either can run `/link <name>`: the server hands each side the other's address,
+the requester dials directly, and from then on `/msg` to that peer goes over the
+direct connection instead of through the server. `/msg` to anyone else still
+uses the server relay, so it degrades gracefully.
+
+```sh
+scripts/client.sh --p2p     # run one per person, in separate terminals
+```
+
+The two ends speak the same line protocol they use with the server — the first
+line is the sender's nick, every later line is a message — so a direct link is
+a plain TCP connection between the two clients.
+
+The server only brokers the introduction; it never sees the direct traffic. It
+also never dials anything itself: it hands over the address each side
+advertised and lets the two clients do it.
+
+Introductions travel as *control lines*, which the server prefixes with a
+control character. Relayed chat always starts with the sender's nick, and nicks
+are cleaned down to letters, digits and `. _ -`, so no message a user types can
+look like a control line and make another client dial somewhere. The browser
+page and the UDP client never get control lines at all, and a client that was
+not started with `--p2p` ignores them.
+
+This is a loopback demonstration, not a secure design: the advertised address is
+trusted as-is, there is no NAT traversal, and the direct channel is
+unauthenticated, so a local process could claim any name. The UDP client and the
+browser page cannot hold a listener, so p2p applies to the TCP client only.
 
 ## Native build (optional, GraalVM)
 

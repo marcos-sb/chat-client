@@ -26,6 +26,16 @@ final class Hub {
     /** Longer than any chat line should be; protects the broadcast path. */
     private static final int MAX_MESSAGE_LENGTH = 4096;
 
+    /**
+     * Marks a line the server sends for a client's own benefit rather than as
+     * chat traffic.
+     *
+     * <p>Relayed chat always starts with the sender's nick, and nicks are
+     * cleaned down to letters, digits and {@code . _ -}, so no message a user
+     * types can look like a control line.
+     */
+    static final String CONTROL = "\u0001";
+
     /** Letters, digits, and {@code . _ -}, the only characters names may use. */
     private static final Pattern VALID_NAME = Pattern.compile("[\\p{L}\\p{N}_.\\-]+");
     private static final Pattern NAME_CHARS = Pattern.compile("[\\p{L}\\p{N}_.\\-]");
@@ -118,6 +128,8 @@ final class Hub {
             case "/who", "/names" -> who(session);
             case "/msg", "/dm", "/whisper" -> direct(session, rest);
             case "/me" -> emote(session, rest);
+            case "/listen" -> listen(session, rest);
+            case "/link" -> link(session, rest);
             case "/quit", "/exit" -> throw new Quit();
             default -> reply(session, "* unknown command \"" + name + "\" — try /help");
         }
@@ -131,6 +143,7 @@ final class Hub {
         reply(session, "*   /rooms            list rooms");
         reply(session, "*   /who              list who is in your room");
         reply(session, "*   /msg <name> <x>   private message");
+        reply(session, "*   /link <name>      open a direct (p2p) link (TCP clients only)");
         reply(session, "*   /me <action>      emote");
         reply(session, "*   /quit             disconnect");
         reply(session, "* anything else is sent to your room.");
@@ -254,6 +267,63 @@ final class Hub {
         broadcast(session.room(), "* " + session.nick() + " " + rest);
     }
 
+    /**
+     * Records where this client accepts direct connections. Sent automatically by
+     * a {@code --p2p} client; the server only relays the address, it never dials.
+     */
+    private void listen(Session session, String rest) {
+        if (!session.peer().supportsControl()) {
+            reply(session, "* direct links need the TCP client (run it with --p2p)");
+            return;
+        }
+        String address = cleanAddress(rest);
+        if (address == null) {
+            reply(session, "* usage: /listen <host:port>");
+            return;
+        }
+        session.link(address);
+        reply(session, "* direct links enabled at " + address);
+    }
+
+    /**
+     * Rendezvous: hands each side the other's address so they can connect
+     * directly. The server stays out of the resulting conversation.
+     */
+    private void link(Session session, String rest) {
+        if (rest.isEmpty()) {
+            reply(session, "* usage: /link <name>");
+            return;
+        }
+        Session target = find(rest);
+        if (target == null) {
+            reply(session, "* no one named \"" + rest + "\" is here");
+            return;
+        }
+        if (target == session) {
+            reply(session, "* you cannot link to yourself");
+            return;
+        }
+        if (!session.peer().supportsControl() || !target.peer().supportsControl()) {
+            reply(session, "* direct links need the TCP client on both sides");
+            return;
+        }
+        String mine = session.link();
+        String theirs = target.link();
+        if (mine == null) {
+            reply(session, "* your client has not enabled direct links (run it with --p2p)");
+            return;
+        }
+        if (theirs == null) {
+            reply(session, "* " + target.nick() + " has not enabled direct links");
+            return;
+        }
+        // The dialer gets who it is, who to reach, and where; the target is told
+        // who is about to connect. Control lines are prefixed so that a relayed
+        // chat line can never be mistaken for one.
+        reply(session, CONTROL + "link " + session.nick() + " " + target.nick() + " " + theirs);
+        reply(target, CONTROL + "link-incoming " + session.nick() + " " + mine);
+    }
+
     // ---- delivery -------------------------------------------------------
 
     private void reply(Session session, String line) {
@@ -351,6 +421,25 @@ final class Hub {
             }
         }
         return name;
+    }
+
+    /** Accepts {@code host:port}; returns a normalized form, or null if malformed. */
+    private static String cleanAddress(String raw) {
+        String address = raw.strip();
+        int colon = address.lastIndexOf(':');
+        if (colon <= 0 || colon == address.length() - 1) {
+            return null;
+        }
+        int port;
+        try {
+            port = Integer.parseInt(address.substring(colon + 1));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        if (port < 1 || port > 65535) {
+            return null;
+        }
+        return address.substring(0, colon) + ":" + port;
     }
 
     private static String memberCount(Room room) {
