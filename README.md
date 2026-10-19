@@ -31,6 +31,15 @@ The run scripts take the same arguments as the classes and recompile
 automatically if a source file is newer than its `.class`. They find a JDK via
 `JAVA_HOME`, then `PATH`, then a local SDKMAN install.
 
+`scripts/smoke.sh` runs the whole thing end to end: it starts a server on a
+spare port, drives the real client through it over TCP, UDP and WebSocket, and
+checks what each side printed. It exits non-zero if anything fails.
+
+```sh
+scripts/smoke.sh              # 20 checks, about 30 seconds
+SMOKE_PORT=5300 scripts/smoke.sh
+```
+
 Prefer the raw commands? They're equivalent:
 
 ```sh
