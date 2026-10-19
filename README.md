@@ -37,7 +37,7 @@ spare port, drives the real client through it over TCP, UDP and WebSocket, and
 checks what each side printed. It exits non-zero if anything fails.
 
 ```sh
-scripts/smoke.sh              # 20 checks, about 30 seconds
+scripts/smoke.sh              # 31 checks, about 20 seconds
 SMOKE_PORT=5300 scripts/smoke.sh
 ```
 
@@ -89,6 +89,8 @@ Everyone starts in `#lobby`. A line beginning with `/` is a command:
 | `/who` | list who is in your current room |
 | `/msg <name> <text>` | private message (aliases `/dm`, `/whisper`) |
 | `/link <name>` | ask the server to introduce you for a direct link (see below, TCP only) |
+| `/links` | list the direct links you hold (client-side) |
+| `/unlink <name>` | close a direct link (client-side) |
 | `/me <action>` | emote (`* alice waves`) |
 | `/quit` | disconnect |
 
@@ -97,6 +99,10 @@ letters, digits, and `. _ -`. Joins, parts, and nick changes are announced to th
 affected rooms (`* alice joined #dev`), and empty non-default rooms are dropped.
 All three transports share this behavior because they all route through
 `server/Hub.java`.
+
+`/links` and `/unlink` are answered by the client itself, not the server, so
+they work even when the server is out of reach; `/help` lists them above the
+server's own list.
 
 ## Direct (peer-to-peer) messages
 
@@ -110,6 +116,11 @@ uses the server relay, so it degrades gracefully.
 ```sh
 scripts/client.sh --p2p     # run one per person, in separate terminals
 ```
+
+Once a link is up, `/links` lists the links you hold and `/unlink <name>`
+closes one, after which messages to that peer go through the server again.
+Both are answered by the client, so they work even if the server has gone
+away.
 
 The two ends speak the same line protocol they use with the server — the first
 line is the sender's nick, every later line is a message — so a direct link is

@@ -114,6 +114,8 @@ fi
     printf '/nick zoe\n'
     sleep 1
     printf '/msg bob a private word\n'
+    sleep 1
+    printf '/help\n'
     sleep 2
 ) | java -cp "$BUILD" ChatClient "$BASE" > "$WORK/alice.log" 2>&1 &
 (
@@ -129,6 +131,8 @@ check "/rooms lists the lobby" "#lobby" "$WORK/alice.log" 100
 check "/nick renames" "you are now known as \"zoe\"" "$WORK/alice.log" 100
 check "/msg reaches the peer" "[dm] zoe: a private word" "$WORK/bob.log" 100
 check "the server relays the private message" "[dm] to bob: a private word" "$WORK/alice.log" 100
+check "/help lists the client commands" "* client commands:" "$WORK/alice.log" 100
+check "/help still lists the server commands" "*   /join <room>      join or create a room" "$WORK/alice.log" 100
 
 # ---------------------------------------------------------------- flags ----
 printf '\nFlags\n'
@@ -283,21 +287,43 @@ wait_for "$WORK/p2p-server.log" "listening on" 100 || true
 (
     printf 'pete\n'
     sleep 1
+    printf '/links\n'
+    sleep 1
     printf '/link quinn\n'
     sleep 2
+    printf '/links\n'
+    sleep 1
     printf '/msg quinn direct-hello\n'
+    sleep 1
+    printf '/msg quinn after-the-server-died\n'
+    sleep 1
+    printf '/unlink quinn\n'
+    sleep 1
+    printf '/links\n'
+    sleep 1
+    printf '/msg quinn after-the-unlink\n'
     sleep 3
 ) | java -cp "$BUILD" ChatClient --p2p $((BASE + 3)) > "$WORK/pete.log" 2>&1 &
 (
     printf 'quinn\n'
-    sleep 8
+    sleep 14
 ) | java -cp "$BUILD" ChatClient --p2p $((BASE + 3)) > "$WORK/quinn.log" 2>&1 &
 
 check "the client advertises its listener" "* direct links enabled at" "$WORK/pete.log" 100
+check "there are no links to begin with" "* no direct links" "$WORK/pete.log" 100
 check "the link is established" "* direct link to quinn established" "$WORK/pete.log" 100
+check "/links shows the open link" "* direct link to quinn (open)" "$WORK/pete.log" 100
 check "the server brokers the introduction" "* pete is opening a direct link to you" "$WORK/quinn.log" 100
 check "the peer receives the direct message" "[dm] pete: direct-hello" "$WORK/quinn.log" 100
-refute "the server never saw the direct message" "direct-hello" "$WORK/p2p-server.log"
+
+# Kill the server. A direct link must not need it, and a message with no link
+# left cannot get through: together those prove the traffic really bypasses
+# the server rather than being relayed behind the client's back.
+kill "$P2P" 2>/dev/null
+check "the direct message still arrives without the server" "[dm] pete: after-the-server-died" "$WORK/quinn.log" 100
+check "/unlink closes the link" "* direct link to quinn closed" "$WORK/pete.log" 100
+check "the peer sees the link go away" "* direct link with pete closed" "$WORK/quinn.log" 100
+refute "a message with no link and no server does not arrive" "after-the-unlink" "$WORK/quinn.log"
 
 # ---------------------------------------------------------------- done ----
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

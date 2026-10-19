@@ -11,6 +11,9 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -193,7 +196,7 @@ public class ChatClient {
 
             String line;
             while ((line = stdin.readLine()) != null) {
-                if (!sendDirect(line)) {
+                if (!handleLocal(line)) {
                     out.write(line + "\n");
                     out.flush();
                 }
@@ -359,10 +362,11 @@ public class ChatClient {
     }
 
     /**
-     * Sends {@code /msg <name> ...} over a direct link when one exists, and says
-     * whether it did. Returning false lets the caller fall back to the server.
+     * Handles the lines the client answers itself, without the server:
+     * the link commands, and private messages that go over a direct link.
+     * Returns true when the line was consumed and must not reach the server.
      */
-    private static boolean sendDirect(String line) {
+    private static boolean handleLocal(String line) {
         // Ordinary chat is the common case, so look for a command before
         // spending anything on the text: a leading slash is the only way in.
         int start = 0;
@@ -374,6 +378,65 @@ public class ChatClient {
         }
         String trimmed = line.strip();
         String lower = trimmed.toLowerCase(Locale.ROOT);
+        if (lower.equals("/links")) {
+            showLinks();
+            return true;
+        }
+        if (lower.startsWith("/unlink")) {
+            unlink(trimmed.substring("/unlink".length()).strip());
+            return true;
+        }
+        if (lower.equals("/help")) {
+            // The client has commands of its own, so it lists them before the
+            // server's list arrives.
+            say("* client commands:");
+            say("*   /links            list the direct links you hold");
+            say("*   /unlink <name>    close a direct link");
+            return false; // the server's own help still follows
+        }
+        return sendDirect(trimmed, lower);
+    }
+
+    /** Lists the direct links this client holds. */
+    private static void showLinks() {
+        if (links.isEmpty()) {
+            say("* no direct links");
+            return;
+        }
+        List<String> nicks = new ArrayList<>();
+        for (DirectLink link : links.values()) {
+            nicks.add(link.nick());
+        }
+        Collections.sort(nicks);
+        for (String nick : nicks) {
+            say("* direct link to " + nick + " (open)");
+        }
+    }
+
+    /** Drops the direct link to a peer, if there is one. */
+    private static void unlink(String nick) {
+        if (nick.isEmpty()) {
+            say("* usage: /unlink <name>");
+            return;
+        }
+        DirectLink link = link(nick);
+        if (link == null) {
+            say("* no direct link to \"" + nick + "\"");
+            return;
+        }
+        links.remove(link.nick(), link);
+        try {
+            link.socket.close();
+        } catch (IOException ignored) {
+        }
+        say("* direct link to " + link.nick() + " closed");
+    }
+
+    /**
+     * Sends {@code /msg <name> ...} over a direct link when one exists, and says
+     * whether it did. Returning false lets the caller fall back to the server.
+     */
+    private static boolean sendDirect(String trimmed, String lower) {
         int cut;
         if (lower.startsWith("/msg ")) {
             cut = 5;
