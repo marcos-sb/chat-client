@@ -94,18 +94,25 @@ public class ChatClient {
         links.clear();
     }
 
-    private static void runUdp(int port) throws IOException {
+    private static void runUdp(int port, String name, String room) throws IOException {
         DatagramSocket sock = new DatagramSocket();
         SocketAddress server = new InetSocketAddress(HOST, port);
-        System.out.print("Name: ");
-        System.out.flush();
         BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-        String name = stdin.readLine();
-        if (name == null) {
-            name = "";
+        String chosen = name;
+        if (chosen == null) {
+            System.out.print("Name: ");
+            System.out.flush();
+            chosen = stdin.readLine();
+            if (chosen == null) {
+                chosen = "";
+            }
         }
-        byte[] payload = name.getBytes(StandardCharsets.UTF_8);
+        byte[] payload = chosen.getBytes(StandardCharsets.UTF_8);
         sock.send(new DatagramPacket(payload, payload.length, server));
+        if (room != null) {
+            byte[] join = ("/join " + room).getBytes(StandardCharsets.UTF_8);
+            sock.send(new DatagramPacket(join, join.length, server));
+        }
         Thread.ofVirtual().name("udp-receiver").start(() -> {
             try {
                 // One buffer and one packet for the life of the connection:
@@ -130,7 +137,7 @@ public class ChatClient {
         }
     }
 
-    private static void runTcp(int port) throws IOException {
+    private static void runTcp(int port, String name, String room) throws IOException {
         Socket sock;
         try {
             sock = new Socket(HOST, port);
@@ -148,21 +155,29 @@ public class ChatClient {
         // other half by telling a peer where to reach us.
         ServerSocket listener = p2p ? new ServerSocket(0, 16, InetAddress.getByName(HOST)) : null;
         try {
-            System.out.print("Name: ");
-            System.out.flush();
             BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
-            String name = stdin.readLine();
-            if (name == null) {
-                name = "";
+            String chosen = name;
+            if (chosen == null) {
+                System.out.print("Name: ");
+                System.out.flush();
+                chosen = stdin.readLine();
+                if (chosen == null) {
+                    chosen = "";
+                }
             }
             BufferedWriter out = new BufferedWriter(new OutputStreamWriter(sock.getOutputStream(), StandardCharsets.UTF_8));
-            out.write(name + "\n");
+            out.write(chosen + "\n");
             out.flush();
 
             if (listener != null) {
                 out.write("/listen " + HOST + ":" + listener.getLocalPort() + "\n");
                 out.flush();
                 acceptLinks(listener);
+            }
+
+            if (room != null) {
+                out.write("/join " + room + "\n");
+                out.flush();
             }
 
             Thread.ofVirtual().name("tcp-receiver").start(() -> {
@@ -400,28 +415,55 @@ public class ChatClient {
     public static void main(String[] args) throws IOException {
         boolean udp = false;
         int port = DEFAULT_PORT;
-        for (String arg : args) {
+        String name = null;
+        String room = null;
+        for (int i = 0; i < args.length; i++) {
+            String arg = args[i];
             if (arg.equals("-u") || arg.equals("--udp")) {
                 udp = true;
             } else if (arg.equals("-p") || arg.equals("--p2p")) {
                 p2p = true;
+            } else if (arg.equals("-n") || arg.equals("--name")) {
+                i++;
+                name = value(args, i, "--name");
+            } else if (arg.startsWith("--name=")) {
+                name = arg.substring("--name=".length());
+            } else if (arg.equals("-r") || arg.equals("--room")) {
+                i++;
+                room = value(args, i, "--room");
+            } else if (arg.startsWith("--room=")) {
+                room = arg.substring("--room=".length());
             } else {
                 try {
                     port = Integer.parseInt(arg);
                 } catch (NumberFormatException e) {
-                    System.err.println("Usage: java ChatClient [-u] [-p|--p2p] [port]");
-                    System.exit(1);
+                    usage("cannot read \"" + arg + "\" as a port");
                 }
             }
         }
         if (udp && p2p) {
-            System.err.println("[client] --p2p is only available over TCP");
-            System.exit(1);
+            usage("--p2p is only available over TCP");
         }
         if (udp) {
-            runUdp(port);
+            runUdp(port, name, room);
         } else {
-            runTcp(port);
+            runTcp(port, name, room);
         }
+    }
+
+    /** The value that follows a flag, or an error if it is missing. */
+    private static String value(String[] args, int index, String flag) {
+        if (index >= args.length) {
+            usage(flag + " needs a value");
+            return null; // usage() exits
+        }
+        return args[index];
+    }
+
+    private static void usage(String message) {
+        System.err.println("[client] " + message);
+        System.err.println("Usage: java ChatClient [-u] [-p|--p2p] [-n|--name <name>]"
+                + " [-r|--room <room>] [port]");
+        System.exit(1);
     }
 }

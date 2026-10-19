@@ -25,6 +25,7 @@ scripts/client.sh
 scripts/client.sh 5100
 scripts/client.sh -u
 scripts/client.sh --p2p     # opens a listener for direct (peer-to-peer) links
+scripts/client.sh --name alice --room dev   # no prompt, straight into #dev
 ```
 
 The run scripts take the same arguments as the classes and recompile
@@ -48,9 +49,12 @@ java -cp build ChatServer
 java -cp build ChatClient
 ```
 
-Usage: `java ChatClient [-u] [-p|--p2p] [port]`. On start it prompts `Name: `, sends the
-name, then prints incoming lines while forwarding your input to the room. If
-the server isn't running it exits with:
+Usage: `java ChatClient [-u] [-p|--p2p] [-n|--name <name>] [-r|--room <room>] [port]`.
+On start it prompts `Name: `, sends the name, then prints incoming lines while
+forwarding your input to the room. With `--name` the prompt is skipped and that
+name is used instead, and with `--room` the client joins that room as soon as
+it connects, so the client can be driven from a script. If the server isn't
+running it exits with:
 
 ```
 [client] cannot connect to 127.0.0.1:<port> — is the server running?

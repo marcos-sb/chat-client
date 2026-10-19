@@ -130,6 +130,23 @@ check "/nick renames" "you are now known as \"zoe\"" "$WORK/alice.log" 100
 check "/msg reaches the peer" "[dm] zoe: a private word" "$WORK/bob.log" 100
 check "the server relays the private message" "[dm] to bob: a private word" "$WORK/alice.log" 100
 
+# ---------------------------------------------------------------- flags ----
+printf '\nFlags\n'
+(
+    printf 'a message in the named room\n'
+    sleep 4
+) | java -cp "$BUILD" ChatClient --name scripted --room dev "$BASE" > "$WORK/scripted.log" 2>&1 &
+(
+    sleep 1
+    printf 'hello from the other side\n'
+    sleep 4
+) | java -cp "$BUILD" ChatClient --name other --room dev "$BASE" > "$WORK/other.log" 2>&1 &
+
+check "the client joins the room it was given" "* joined #dev" "$WORK/scripted.log" 100
+refute "the client does not prompt for a name" "Name: " "$WORK/scripted.log"
+check "the named client is reachable in its room" "scripted: a message in the named room" "$WORK/other.log" 100
+check "the other client is reachable in its room" "other: hello from the other side" "$WORK/scripted.log" 100
+
 # ---------------------------------------------------------------- UDP -----
 printf '\nUDP\n'
 UDP=$(start_server $((BASE + 1)) "$WORK/udp-server.log" -u)
