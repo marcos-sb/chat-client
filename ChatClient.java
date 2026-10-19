@@ -108,9 +108,11 @@ public class ChatClient {
         sock.send(new DatagramPacket(payload, payload.length, server));
         Thread.ofVirtual().name("udp-receiver").start(() -> {
             try {
+                // One buffer and one packet for the life of the connection:
+                // a datagram burst should not allocate per packet.
+                byte[] buf = new byte[UDP_BUFFER_SIZE];
+                DatagramPacket p = new DatagramPacket(buf, buf.length);
                 while (true) {
-                    byte[] buf = new byte[UDP_BUFFER_SIZE];
-                    DatagramPacket p = new DatagramPacket(buf, buf.length);
                     sock.receive(p);
                     System.out.println(new String(p.getData(), p.getOffset(), p.getLength(), StandardCharsets.UTF_8));
                 }
@@ -346,6 +348,15 @@ public class ChatClient {
      * whether it did. Returning false lets the caller fall back to the server.
      */
     private static boolean sendDirect(String line) {
+        // Ordinary chat is the common case, so look for a command before
+        // spending anything on the text: a leading slash is the only way in.
+        int start = 0;
+        while (start < line.length() && Character.isWhitespace(line.charAt(start))) {
+            start++;
+        }
+        if (start >= line.length() || line.charAt(start) != '/') {
+            return false;
+        }
         String trimmed = line.strip();
         String lower = trimmed.toLowerCase(Locale.ROOT);
         int cut;
