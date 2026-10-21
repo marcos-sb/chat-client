@@ -1,7 +1,11 @@
+import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -90,6 +94,14 @@ public class ChatClient {
     /** Guards stdout so lines from the server and from direct links do not interleave. */
     private static final Object OUT = new Object();
 
+    /**
+     * Where the client's output goes. It is buffered, so a burst of lines
+     * costs one write instead of one per line; a thread flushes it every
+     * sixteenth of a second, and before anything the client waits for.
+     */
+    private static final BufferedOutputStream OUT_BUFFER =
+            new BufferedOutputStream(new FileOutputStream(FileDescriptor.out), 8192);
+
     private static void say(String line) {
         StringBuilder out = new StringBuilder();
         if (useTimestamps) {
@@ -112,9 +124,38 @@ public class ChatClient {
         } else {
             out.append(line);
         }
+        byte[] bytes = (out + "\n").getBytes(StandardCharsets.UTF_8);
         synchronized (OUT) {
-            System.out.println(out);
+            try {
+                OUT_BUFFER.write(bytes);
+            } catch (IOException ignored) {
+            }
         }
+    }
+
+    /** Pushes whatever is buffered out to the terminal. */
+    private static void flushOutput() {
+        synchronized (OUT) {
+            try {
+                OUT_BUFFER.flush();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    /** Keeps the output moving, so a line never sits in the buffer for long. */
+    private static void startFlusher() {
+        Thread.ofVirtual().name("out-flusher").start(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(16);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                flushOutput();
+            }
+        });
     }
 
     /** Whether the user has been quiet for a while, and so may be away. */
@@ -131,8 +172,13 @@ public class ChatClient {
             System.err.print(question);
             System.err.flush();
         } else {
-            System.out.print(question);
-            System.out.flush();
+            synchronized (OUT) {
+                try {
+                    OUT_BUFFER.write(question.getBytes(StandardCharsets.UTF_8));
+                    OUT_BUFFER.flush();
+                } catch (IOException ignored) {
+                }
+            }
         }
     }
 
@@ -231,6 +277,7 @@ public class ChatClient {
                 sock.send(new DatagramPacket(msg, msg.length, server));
             }
         } finally {
+            flushOutput();
             sock.close();
         }
     }
@@ -270,6 +317,7 @@ public class ChatClient {
                 }
             }
         } finally {
+            flushOutput();
             if (link != null) {
                 link.stop();
             }
@@ -830,6 +878,10 @@ public class ChatClient {
         String name = null;
         String room = null;
         String colour = "auto";
+        startFlusher();
+        // Whatever is still buffered has to reach the terminal when the client
+        // is stopped, so it goes out on the way down.
+        Runtime.getRuntime().addShutdownHook(new Thread(ChatClient::flushOutput));
         for (int i = 0; i < args.length; i++) {
             String arg = args[i];
             if (arg.equals("-u") || arg.equals("--udp")) {

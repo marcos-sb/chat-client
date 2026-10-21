@@ -144,6 +144,11 @@ question for your name goes to stderr instead.
 java -cp build ChatClient --name alice --raw | grep -i deploy
 ```
 
+The client's output is buffered, so a burst of lines costs one write instead
+of one per line. A thread flushes it every sixteenth of a second, so a line is
+never more than that away from the screen, and whatever is left goes out when
+the client stops.
+
 ## Direct (peer-to-peer) messages
 
 Run a TCP client with `--p2p` and it opens a local listener, then advertises it
