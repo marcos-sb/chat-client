@@ -19,8 +19,14 @@ BASE=${SMOKE_PORT:-5200}
 
 PIDS=""
 cleanup() {
+    # The clients reconnect when their server goes, so they have to be stopped
+    # too: one left over would join the next run's server.
     for pid in $PIDS; do
         kill "$pid" 2>/dev/null
+    done
+    sleep 0.2
+    for pid in $PIDS; do
+        kill -9 "$pid" 2>/dev/null
     done
     rm -rf "$WORK"
 }
@@ -255,10 +261,12 @@ fi
     printf '/help\n'
     sleep 2
 ) | java -cp "$BUILD" ChatClient "$BASE" > "$WORK/alice.log" 2>&1 &
+PIDS="$PIDS $!"
 (
     printf 'bob\n'
     sleep 8
 ) | java -cp "$BUILD" ChatClient "$BASE" > "$WORK/bob.log" 2>&1 &
+PIDS="$PIDS $!"
 
 check "client is welcomed" "* welcome to #lobby" "$WORK/alice.log" 100
 check "room traffic reaches the other client" "alice: hello room" "$WORK/bob.log" 100
@@ -277,11 +285,13 @@ printf '\nFlags\n'
     printf 'a message in the named room\n'
     sleep 4
 ) | java -cp "$BUILD" ChatClient --name scripted --room dev "$BASE" > "$WORK/scripted.log" 2>&1 &
+PIDS="$PIDS $!"
 (
     sleep 1
     printf 'hello from the other side\n'
     sleep 4
 ) | java -cp "$BUILD" ChatClient --name other --room dev "$BASE" > "$WORK/other.log" 2>&1 &
+PIDS="$PIDS $!"
 
 check "the client joins the room it was given" "* joined #dev" "$WORK/scripted.log" 100
 refute "the client does not prompt for a name" "Name: " "$WORK/scripted.log"
@@ -300,10 +310,12 @@ wait_for "$WORK/udp-server.log" "listening on" 100 || true
     printf 'hello over udp\n'
     sleep 3
 ) | java -cp "$BUILD" ChatClient -u $((BASE + 1)) > "$WORK/carol.log" 2>&1 &
+PIDS="$PIDS $!"
 (
     printf 'dave\n'
     sleep 6
 ) | java -cp "$BUILD" ChatClient -u $((BASE + 1)) > "$WORK/dave.log" 2>&1 &
+PIDS="$PIDS $!"
 
 check "udp client is welcomed" "* welcome to #lobby" "$WORK/carol.log" 100
 check "udp traffic reaches the other client" "carol: hello over udp" "$WORK/dave.log" 100
@@ -352,10 +364,12 @@ wait_for "$WORK/p2p-server.log" "listening on" 100 || true
     printf '/msg quinn after-the-unlink\n'
     sleep 3
 ) | java -cp "$BUILD" ChatClient --p2p $((BASE + 3)) > "$WORK/pete.log" 2>&1 &
+PIDS="$PIDS $!"
 (
     printf 'quinn\n'
     sleep 20
 ) | java -cp "$BUILD" ChatClient --p2p $((BASE + 3)) > "$WORK/quinn.log" 2>&1 &
+PIDS="$PIDS $!"
 
 check "the client advertises its listener" "* direct links enabled at" "$WORK/pete.log" 100
 check "there are no links to begin with" "* no direct links" "$WORK/pete.log" 100
@@ -388,6 +402,45 @@ check "/unlink closes the link" "* direct link to quinn closed" "$WORK/pete.log"
 check "the peer sees the link go away" "* direct link with pete closed" "$WORK/quinn.log" 100
 refute "a message with no link and no server does not arrive" "after-the-unlink" "$WORK/quinn.log"
 
+
+# ------------------------------------------------------- reconnecting -------
+printf '\nReconnecting\n'
+RE=$(start_server $((BASE + 4)) "$WORK/re-server.log")
+PIDS="$PIDS $RE"
+wait_for "$WORK/re-server.log" "listening on" 100 || true
+
+(
+    sleep 1
+    printf 'before the restart\n'
+    # The check below takes the server away; this message has to wait for it.
+    while [ ! -f "$WORK/server-away" ]; do
+        sleep 0.2
+    done
+    printf 'while the server was away\n'
+    sleep 6
+) | java -cp "$BUILD" ChatClient --name resilient "$((BASE + 4))" > "$WORK/resilient.log" 2>&1 &
+PIDS="$PIDS $!"
+
+check "the client is welcomed" "* welcome to #lobby" "$WORK/resilient.log" 100
+check "the first message is echoed back" "resilient: before the restart" "$WORK/resilient.log" 100
+
+# Take the server away and put it back on the same port.
+kill "$RE" 2>/dev/null
+while kill -0 "$RE" 2>/dev/null; do
+    sleep 0.1
+done
+touch "$WORK/server-away"
+check "the client notices the server is gone" "* the server connection was lost" "$WORK/resilient.log" 100
+check "a message sent while it is gone waits" "* the server is away" "$WORK/resilient.log" 100
+sleep 1
+RE=$(start_server $((BASE + 4)) "$WORK/re-server2.log")
+PIDS="$PIDS $RE"
+if ! wait_for "$WORK/re-server2.log" "listening on" 100; then
+    bad "the server comes back on the same port"
+    dump "$WORK/re-server2.log"
+fi
+check "the client comes back" "* reconnected to the server" "$WORK/resilient.log" 100
+check "the waiting message goes out" "resilient: while the server was away" "$WORK/resilient.log" 100
 
 # ---------------------------------------------------------------- done ----
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

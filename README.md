@@ -37,7 +37,7 @@ spare port, drives the real client through it over TCP, UDP and WebSocket, and
 checks what each side printed. It exits non-zero if anything fails.
 
 ```sh
-scripts/smoke.sh              # 33 checks, about 30 seconds
+scripts/smoke.sh              # 39 checks, about 40 seconds
 SMOKE_PORT=5300 scripts/smoke.sh
 ```
 
@@ -59,6 +59,14 @@ running it exits with:
 ```
 [client] cannot connect to 127.0.0.1:<port> — is the server running?
 ```
+
+If the server goes away *after* the client has connected, the client stays up
+and reconnects on its own, with a backoff that grows to five seconds. It says
+so when the connection drops and again when it is back, and it registers
+itself again each time — the name, the room, and the address it accepts direct
+links on. The listener for direct links is not reopened, so links a peer
+already has keep working across a restart of the server. A line typed while
+the server is away waits for it and goes out once it is back.
 
 The server speaks the same protocol, supports TCP and UDP
 (`java ChatServer [-u] [port]`), and caps names at 32 characters (default

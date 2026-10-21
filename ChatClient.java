@@ -170,22 +170,10 @@ public class ChatClient {
     }
 
     private static void runTcp(int port, String name, String room) throws IOException {
-        Socket sock;
-        try {
-            sock = new Socket(HOST, port);
-        } catch (IOException e) {
-            System.out.println("[client] cannot connect to " + HOST + ":" + port + " — is the server running?");
-            System.exit(1);
-            return;
-        }
-        // Chat lines are small and sent one at a time, so Nagle's algorithm
-        // would hold them back waiting for an ack. Turning it off makes a
-        // keystroke's worth of text leave immediately.
-        sock.setTcpNoDelay(true);
-
         // A listener is the peer's half of a direct link; the server supplies the
         // other half by telling a peer where to reach us.
         ServerSocket listener = p2p ? new ServerSocket(0, 16, InetAddress.getByName(HOST)) : null;
+        ServerLink link = null;
         try {
             BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
             String chosen = name;
@@ -198,43 +186,26 @@ public class ChatClient {
                 }
             }
             myName = chosen;
-            BufferedWriter out = new BufferedWriter(new OutputStreamWriter(sock.getOutputStream(), StandardCharsets.UTF_8));
-            out.write(chosen + "\n");
-            out.flush();
-
             if (listener != null) {
-                out.write("/listen " + HOST + ":" + listener.getLocalPort() + " " + TOKEN + "\n");
-                out.flush();
                 acceptLinks(listener);
             }
-
-            if (room != null) {
-                out.write("/join " + room + "\n");
-                out.flush();
+            link = new ServerLink(port, chosen, room, listener);
+            if (!link.open()) {
+                System.out.println("[client] cannot connect to " + HOST + ":" + port + " — is the server running?");
+                System.exit(1);
+                return;
             }
-
-            Thread.ofVirtual().name("tcp-receiver").start(() -> {
-                try {
-                    BufferedReader in = new BufferedReader(new InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8));
-                    String l;
-                    while ((l = in.readLine()) != null) {
-                        handleServerLine(l);
-                    }
-                } catch (IOException ignored) {
-                }
-            });
+            link.supervise();
 
             String line;
             while ((line = stdin.readLine()) != null) {
                 if (!handleLocal(line)) {
-                    out.write(line + "\n");
-                    out.flush();
+                    link.send(line);
                 }
             }
         } finally {
-            try {
-                sock.close();
-            } catch (IOException ignored) {
+            if (link != null) {
+                link.stop();
             }
             if (listener != null) {
                 try {
@@ -243,6 +214,214 @@ public class ChatClient {
                 }
             }
             closeLinks();
+        }
+    }
+
+    /** One connection to the server, and whether it is still good. */
+    private static final class Connection {
+        private final Socket socket;
+        private final BufferedWriter out;
+        private volatile boolean alive = true;
+
+        Connection(Socket socket, BufferedWriter out) {
+            this.socket = socket;
+            this.out = out;
+        }
+
+        Socket socket() {
+            return socket;
+        }
+
+        boolean alive() {
+            return alive;
+        }
+
+        void dead() {
+            alive = false;
+        }
+
+        void send(String line) throws IOException {
+            synchronized (out) {
+                out.write(line + "\n");
+                out.flush();
+            }
+        }
+
+        void close() {
+            alive = false;
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    /**
+     * The client's connection to the server, and the machinery that brings it
+     * back when the server goes away.
+     *
+     * <p>The listener for direct links outlives a reconnect: it stays open, and
+     * only the registration with the server is repeated, so the links a peer
+     * already has keep working.
+     */
+    private static final class ServerLink {
+        private final int port;
+        private final String name;
+        private final String room;
+        private final ServerSocket listener;
+        private Connection connection;
+        private boolean stopped;
+
+        ServerLink(int port, String name, String room, ServerSocket listener) {
+            this.port = port;
+            this.name = name;
+            this.room = room;
+            this.listener = listener;
+        }
+
+        /** Connects and registers; false if the server is not there. */
+        boolean open() {
+            try {
+                set(open0());
+                return true;
+            } catch (IOException e) {
+                return false;
+            }
+        }
+
+        /** Connects, registers, and starts reading from the new connection. */
+        private Connection open0() throws IOException {
+            Socket sock = new Socket(HOST, port);
+            // Chat lines are small and sent one at a time, so Nagle's algorithm
+            // would hold them back waiting for an ack.
+            sock.setTcpNoDelay(true);
+            BufferedWriter out = new BufferedWriter(new OutputStreamWriter(sock.getOutputStream(), StandardCharsets.UTF_8));
+            out.write(name + "\n");
+            out.flush();
+            if (listener != null) {
+                out.write("/listen " + HOST + ":" + listener.getLocalPort() + " " + TOKEN + "\n");
+                out.flush();
+            }
+            if (room != null) {
+                out.write("/join " + room + "\n");
+                out.flush();
+            }
+            Connection conn = new Connection(sock, out);
+            Thread.ofVirtual().name("tcp-receiver").start(() -> read(conn));
+            return conn;
+        }
+
+        private synchronized void set(Connection conn) {
+            connection = conn;
+            notifyAll();
+        }
+
+        /** Reads from the connection until it ends, then marks it dead. */
+        private void read(Connection conn) {
+            try {
+                BufferedReader in = new BufferedReader(new InputStreamReader(conn.socket().getInputStream(), StandardCharsets.UTF_8));
+                String line;
+                while ((line = in.readLine()) != null) {
+                    handleServerLine(line);
+                }
+            } catch (IOException ignored) {
+            }
+            conn.dead();
+            synchronized (this) {
+                notifyAll();
+            }
+            if (!stopped) {
+                say("* the server connection was lost — reconnecting");
+            }
+        }
+
+        /** Keeps the connection up, reconnecting with a backoff when it drops. */
+        void supervise() {
+            Thread.ofVirtual().name("tcp-supervisor").start(() -> {
+                long backoff = 250;
+                while (true) {
+                    synchronized (ServerLink.this) {
+                        while (!stopped && connection != null && connection.alive()) {
+                            try {
+                                ServerLink.this.wait(500);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
+                        }
+                        if (stopped) {
+                            return;
+                        }
+                    }
+                    try {
+                        set(open0());
+                        say("* reconnected to the server");
+                        backoff = 250;
+                    } catch (IOException e) {
+                        synchronized (ServerLink.this) {
+                            try {
+                                ServerLink.this.wait(backoff);
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
+                        }
+                        backoff = Math.min(backoff * 2, 5000);
+                    }
+                }
+            });
+        }
+
+        /** Sends a line, waiting for the connection to come back if it dropped. */
+        void send(String line) throws IOException {
+            if (!alive()) {
+                say("* the server is away — this message waits for it");
+            }
+            while (true) {
+                Connection conn = await();
+                try {
+                    conn.send(line);
+                    return;
+                } catch (IOException e) {
+                    // The connection dropped between the check and the write:
+                    // mark it dead and try again on the next one.
+                    conn.dead();
+                    synchronized (this) {
+                        notifyAll();
+                    }
+                }
+            }
+        }
+
+        private synchronized boolean alive() {
+            return connection != null && connection.alive();
+        }
+
+        /** The live connection, waiting for the supervisor to restore it. */
+        private synchronized Connection await() throws IOException {
+            while (true) {
+                if (stopped) {
+                    throw new IOException("the client is stopping");
+                }
+                if (connection != null && connection.alive()) {
+                    return connection;
+                }
+                try {
+                    wait(500);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("interrupted");
+                }
+            }
+        }
+
+        /** Closes the connection and stops reconnecting. */
+        synchronized void stop() {
+            stopped = true;
+            if (connection != null) {
+                connection.close();
+            }
+            notifyAll();
         }
     }
 
