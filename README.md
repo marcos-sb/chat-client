@@ -37,7 +37,7 @@ spare port, drives the real client through it over TCP, UDP and WebSocket, and
 checks what each side printed. It exits non-zero if anything fails.
 
 ```sh
-scripts/smoke.sh              # 45 checks, about a minute
+scripts/smoke.sh              # 48 checks, about a minute
 SMOKE_PORT=5300 scripts/smoke.sh
 ```
 
@@ -50,7 +50,7 @@ java -cp build ChatClient
 ```
 
 Usage: `java ChatClient [-u] [-p|--p2p] [-n|--name <name>] [-r|--room <room>]
-[-c|--color auto|always|never] [-t|--timestamps] [--no-bell] [port]`.
+[-c|--color auto|always|never] [-t|--timestamps] [--no-bell] [--raw] [port]`.
 On start it prompts `Name: `, sends the name, then prints incoming lines while
 forwarding your input to the room. With `--name` the prompt is skipped and that
 name is used instead, and with `--room` the client joins that room as soon as
@@ -134,6 +134,14 @@ turns that off.
 
 ```sh
 scripts/client.sh --timestamps --color always
+```
+
+`--raw` is for piping the chat somewhere else: stdout then holds nothing but
+the lines themselves, with no colour, no timestamps and no bell, and the
+question for your name goes to stderr instead.
+
+```sh
+java -cp build ChatClient --name alice --raw | grep -i deploy
 ```
 
 ## Direct (peer-to-peer) messages

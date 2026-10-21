@@ -545,6 +545,15 @@ check "the bell rings for a private message" "$BEL" "$WORK/styled.log" 100
 check_re "lines are stamped with the time" "^[0-9][0-9]:[0-9][0-9]:[0-9][0-9] " "$WORK/styled.log" 100
 refute "no colour when it is turned off" "$ESC" "$WORK/sender.log"
 
+(
+    printf 'a plain line\n'
+    sleep 6
+) | java -cp "$BUILD" ChatClient --name rawclient --raw "$((BASE + 6))" > "$WORK/raw.log" 2>&1 &
+PIDS="$PIDS $!"
+refute "raw mode keeps stdout plain" "$ESC" "$WORK/raw.log"
+refute "raw mode does not ask for a name on stdout" "Name: " "$WORK/raw.log"
+check "raw mode still shows the chat" "rawclient: a plain line" "$WORK/raw.log" 100
+
 # ---------------------------------------------------------------- done ----
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

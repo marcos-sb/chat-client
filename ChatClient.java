@@ -54,6 +54,9 @@ public class ChatClient {
     private static boolean useTimestamps;
     private static boolean useBell = true;
 
+    /** Raw mode: plain lines on stdout, nothing else in the way. */
+    private static boolean raw;
+
     /** When the user last typed something; a quiet client is probably away. */
     private static volatile long lastInputAt = System.currentTimeMillis();
 
@@ -120,6 +123,20 @@ public class ChatClient {
     }
 
     /**
+     * Asks the user something. In raw mode the question goes to stderr, so
+     * that stdout holds nothing but the chat.
+     */
+    private static void prompt(String question) {
+        if (raw) {
+            System.err.print(question);
+            System.err.flush();
+        } else {
+            System.out.print(question);
+            System.out.flush();
+        }
+    }
+
+    /**
      * Established direct links to other clients, keyed by their nick.
      *
      * <p>Only used with {@code --p2p} over TCP: the server still carries presence
@@ -180,8 +197,7 @@ public class ChatClient {
         BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         String chosen = name;
         if (chosen == null) {
-            System.out.print("Name: ");
-            System.out.flush();
+            prompt("Name: ");
             chosen = stdin.readLine();
             if (chosen == null) {
                 chosen = "";
@@ -228,8 +244,7 @@ public class ChatClient {
             BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
             String chosen = name;
             if (chosen == null) {
-                System.out.print("Name: ");
-                System.out.flush();
+                prompt("Name: ");
                 chosen = stdin.readLine();
                 if (chosen == null) {
                     chosen = "";
@@ -840,6 +855,8 @@ public class ChatClient {
                 useTimestamps = true;
             } else if (arg.equals("--no-bell")) {
                 useBell = false;
+            } else if (arg.equals("--raw")) {
+                raw = true;
             } else {
                 try {
                     port = Integer.parseInt(arg);
@@ -859,6 +876,13 @@ public class ChatClient {
             useColour = false;
         } else {
             usage("--color takes auto, always or never");
+        }
+        if (raw) {
+            // Raw mode is for piping the chat somewhere else, so stdout holds
+            // nothing but the lines themselves.
+            useColour = false;
+            useTimestamps = false;
+            useBell = false;
         }
         if (udp) {
             runUdp(port, name, room);
@@ -880,7 +904,7 @@ public class ChatClient {
         System.err.println("[client] " + message);
         System.err.println("Usage: java ChatClient [-u] [-p|--p2p] [-n|--name <name>]"
                 + " [-r|--room <room>] [-c|--color auto|always|never] [-t|--timestamps]"
-                + " [--no-bell] [port]");
+                + " [--no-bell] [--raw] [port]");
         System.exit(1);
     }
 }
