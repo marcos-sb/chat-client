@@ -47,11 +47,34 @@ dump() {
     sed 's/^/          | /' "$1"
 }
 
+# check_re <description> <pattern> <file>: waits for the pattern, then asserts
+check_re() {
+    if ! wait_for_re "$3" "$2" "$4"; then
+        bad "$1 -- never saw /$2/"
+        dump "$3"
+        return
+    fi
+    ok "$1"
+}
+
 # wait_for <file> <needle> <tenths of a second>
 wait_for() {
     i=0
     while [ "$i" -lt "$3" ]; do
         if grep -qF -- "$2" "$1" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# wait_for_re <file> <pattern> <tenths of a second>
+wait_for_re() {
+    i=0
+    while [ "$i" -lt "$3" ]; do
+        if grep -qE -- "$2" "$1" 2>/dev/null; then
             return 0
         fi
         sleep 0.1
@@ -496,6 +519,31 @@ PIDS="$PIDS $!"
 
 check "the room keeps going while a client does not read" "other: still here" "$WORK/other2.log" 100
 check "a client that cannot keep up is dropped" "quiet left #lobby" "$WORK/slow-server.log" 100
+
+# ---------------------------------------------------------------- style ----
+printf '\nStyle\n'
+STYLE=$(start_server $((BASE + 6)) "$WORK/style-server.log")
+PIDS="$PIDS $STYLE"
+wait_for "$WORK/style-server.log" "listening on" 100 || true
+
+(
+    printf 'hi\n'
+    sleep 12 # then stay quiet, so a private message finds us idle
+) | java -cp "$BUILD" ChatClient --name styled --color always --timestamps "$((BASE + 6))" > "$WORK/styled.log" 2>&1 &
+PIDS="$PIDS $!"
+(
+    sleep 8 # long enough that the other client counts as away
+    printf '/msg styled a private word\n'
+    sleep 6
+) | java -cp "$BUILD" ChatClient --name sender --color never "$((BASE + 6))" > "$WORK/sender.log" 2>&1 &
+PIDS="$PIDS $!"
+
+ESC=$(printf '\033')
+BEL=$(printf '\007')
+check "private messages are coloured" "$ESC[35m" "$WORK/styled.log" 100
+check "the bell rings for a private message" "$BEL" "$WORK/styled.log" 100
+check_re "lines are stamped with the time" "^[0-9][0-9]:[0-9][0-9]:[0-9][0-9] " "$WORK/styled.log" 100
+refute "no colour when it is turned off" "$ESC" "$WORK/sender.log"
 
 # ---------------------------------------------------------------- done ----
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

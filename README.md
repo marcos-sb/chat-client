@@ -37,7 +37,7 @@ spare port, drives the real client through it over TCP, UDP and WebSocket, and
 checks what each side printed. It exits non-zero if anything fails.
 
 ```sh
-scripts/smoke.sh              # 41 checks, about a minute
+scripts/smoke.sh              # 45 checks, about a minute
 SMOKE_PORT=5300 scripts/smoke.sh
 ```
 
@@ -49,7 +49,8 @@ java -cp build ChatServer
 java -cp build ChatClient
 ```
 
-Usage: `java ChatClient [-u] [-p|--p2p] [-n|--name <name>] [-r|--room <room>] [port]`.
+Usage: `java ChatClient [-u] [-p|--p2p] [-n|--name <name>] [-r|--room <room>]
+[-c|--color auto|always|never] [-t|--timestamps] [--no-bell] [port]`.
 On start it prompts `Name: `, sends the name, then prints incoming lines while
 forwarding your input to the room. With `--name` the prompt is skipped and that
 name is used instead, and with `--room` the client joins that room as soon as
@@ -118,6 +119,22 @@ All three transports share this behavior because they all route through
 `/links` and `/unlink` are answered by the client itself, not the server, so
 they work even when the server is out of reach; `/help` lists them above the
 server's own list.
+
+## How the client looks
+
+Private messages are printed in colour, system lines in a dimmer shade, and
+`--timestamps` puts the time in front of every line. `--color never` turns
+the colour off and `--color always` turns it on whatever the output is;
+`auto`, the default, turns it on when the JVM has a console, which is close
+enough but not quite the same as the output being a terminal.
+
+A private message also rings the terminal bell, but only if the client has not
+heard from you for a few seconds — you are probably not looking. `--no-bell`
+turns that off.
+
+```sh
+scripts/client.sh --timestamps --color always
+```
 
 ## Direct (peer-to-peer) messages
 

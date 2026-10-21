@@ -12,6 +12,8 @@ import java.net.Socket;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -33,6 +35,27 @@ public class ChatClient {
 
     /** Whether this run can hold a listener and act on control lines. */
     private static boolean p2p;
+
+    // ---- how lines are printed -------------------------------------------
+
+    private static final String RESET = "\u001b[0m";
+    private static final String DIM = "\u001b[2m";
+    private static final String BOLD = "\u001b[1m";
+    private static final String MAGENTA = "\u001b[35m";
+    private static final String CYAN = "\u001b[36m";
+    private static final String BELL = "\u0007";
+
+    /** How long a private message may wait before the bell rings. */
+    private static final long IDLE_MS = 5_000;
+
+    private static final DateTimeFormatter CLOCK = DateTimeFormatter.ofPattern("HH:mm:ss");
+
+    private static boolean useColour;
+    private static boolean useTimestamps;
+    private static boolean useBell = true;
+
+    /** When the user last typed something; a quiet client is probably away. */
+    private static volatile long lastInputAt = System.currentTimeMillis();
 
     /** The name this client asked for; the server may have changed it. */
     private static String myName = "";
@@ -65,9 +88,35 @@ public class ChatClient {
     private static final Object OUT = new Object();
 
     private static void say(String line) {
-        synchronized (OUT) {
-            System.out.println(line);
+        StringBuilder out = new StringBuilder();
+        if (useTimestamps) {
+            out.append(LocalTime.now().format(CLOCK)).append(' ');
         }
+        boolean private_ = line.startsWith("[dm] ");
+        if (private_ && useBell && idle()) {
+            out.append(BELL);
+        }
+        if (useColour) {
+            if (private_) {
+                out.append(MAGENTA).append(line).append(RESET);
+            } else if (line.startsWith("* ")) {
+                out.append(DIM).append(line).append(RESET);
+            } else if (line.startsWith("[")) {
+                out.append(CYAN).append(line).append(RESET);
+            } else {
+                out.append(line);
+            }
+        } else {
+            out.append(line);
+        }
+        synchronized (OUT) {
+            System.out.println(out);
+        }
+    }
+
+    /** Whether the user has been quiet for a while, and so may be away. */
+    private static boolean idle() {
+        return System.currentTimeMillis() - lastInputAt > IDLE_MS;
     }
 
     /**
@@ -153,7 +202,7 @@ public class ChatClient {
                 DatagramPacket p = new DatagramPacket(buf, buf.length);
                 while (true) {
                     sock.receive(p);
-                    System.out.println(new String(p.getData(), p.getOffset(), p.getLength(), StandardCharsets.UTF_8));
+                    say(new String(p.getData(), p.getOffset(), p.getLength(), StandardCharsets.UTF_8));
                 }
             } catch (IOException ignored) {
             }
@@ -161,6 +210,7 @@ public class ChatClient {
         try {
             String line;
             while ((line = stdin.readLine()) != null) {
+                lastInputAt = System.currentTimeMillis();
                 byte[] msg = line.getBytes(StandardCharsets.UTF_8);
                 sock.send(new DatagramPacket(msg, msg.length, server));
             }
@@ -199,6 +249,7 @@ public class ChatClient {
 
             String line;
             while ((line = stdin.readLine()) != null) {
+                lastInputAt = System.currentTimeMillis();
                 if (!handleLocal(line)) {
                     link.send(line);
                 }
@@ -763,6 +814,7 @@ public class ChatClient {
         int port = DEFAULT_PORT;
         String name = null;
         String room = null;
+        String colour = "auto";
         for (int i = 0; i < args.length; i++) {
             String arg = args[i];
             if (arg.equals("-u") || arg.equals("--udp")) {
@@ -779,6 +831,15 @@ public class ChatClient {
                 room = value(args, i, "--room");
             } else if (arg.startsWith("--room=")) {
                 room = arg.substring("--room=".length());
+            } else if (arg.equals("-c") || arg.equals("--color")) {
+                i++;
+                colour = value(args, i, "--color");
+            } else if (arg.startsWith("--color=")) {
+                colour = arg.substring("--color=".length());
+            } else if (arg.equals("-t") || arg.equals("--timestamps")) {
+                useTimestamps = true;
+            } else if (arg.equals("--no-bell")) {
+                useBell = false;
             } else {
                 try {
                     port = Integer.parseInt(arg);
@@ -789,6 +850,15 @@ public class ChatClient {
         }
         if (udp && p2p) {
             usage("--p2p is only available over TCP");
+        }
+        if (colour.equals("auto")) {
+            useColour = System.console() != null;
+        } else if (colour.equals("always")) {
+            useColour = true;
+        } else if (colour.equals("never")) {
+            useColour = false;
+        } else {
+            usage("--color takes auto, always or never");
         }
         if (udp) {
             runUdp(port, name, room);
@@ -809,7 +879,8 @@ public class ChatClient {
     private static void usage(String message) {
         System.err.println("[client] " + message);
         System.err.println("Usage: java ChatClient [-u] [-p|--p2p] [-n|--name <name>]"
-                + " [-r|--room <room>] [port]");
+                + " [-r|--room <room>] [-c|--color auto|always|never] [-t|--timestamps]"
+                + " [--no-bell] [port]");
         System.exit(1);
     }
 }
