@@ -37,7 +37,7 @@ spare port, drives the real client through it over TCP, UDP and WebSocket, and
 checks what each side printed. It exits non-zero if anything fails.
 
 ```sh
-scripts/smoke.sh              # 39 checks, about 40 seconds
+scripts/smoke.sh              # 41 checks, about a minute
 SMOKE_PORT=5300 scripts/smoke.sh
 ```
 
@@ -74,6 +74,13 @@ The server speaks the same protocol, supports TCP and UDP
 thousands of idle clients without one OS thread per client (requires JDK 21+;
 developed on JDK 24). Names are cleaned of anything but letters, digits, and
 `. _ -`, and made unique: asking for a taken name gets you a numeric suffix.
+
+Lines going out to a client are queued and written by a thread of their own,
+so one client that stops reading cannot hold up the room: the room carries on
+and the backlog sits in that client's queue. A client with more than two
+megabytes of backlog is dropped, since it is never going to catch up. The cost
+is about six microseconds of extra delay on a single message; the trade buys
+roughly a quarter more throughput and a room that cannot be held hostage.
 
 ### WebSocket
 

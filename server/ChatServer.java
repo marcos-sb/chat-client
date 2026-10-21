@@ -24,22 +24,23 @@ public class ChatServer {
 
     private static final int UDP_SOCKET_BUFFER_BYTES = 4 * 1024 * 1024;
 
-    /** A TCP connection: a socket and a writer guarded by that peer's monitor. */
+    /** A TCP connection: a socket and the queue of lines waiting to go out. */
     private static final class TcpPeer implements Peer {
         private final Socket socket;
-        private final BufferedWriter writer;
+        private final Outbound outbound;
 
-        TcpPeer(Socket socket, BufferedWriter writer) {
+        TcpPeer(Socket socket, Outbound outbound) {
             this.socket = socket;
-            this.writer = writer;
+            this.outbound = outbound;
         }
 
         @Override
-        public void send(String line) throws IOException {
-            synchronized (writer) {
-                writer.write(line + "\n");
-                writer.flush();
-            }
+        public void send(String line) {
+            outbound.send(line);
+        }
+
+        void close() {
+            outbound.close();
         }
 
         /** TCP clients are line-oriented and may hold a listener, so they can. */
@@ -92,14 +93,19 @@ public class ChatServer {
 
     private static void handle(Socket conn, Hub hub) {
         Session session = null;
+        TcpPeer peer = null;
         try {
             BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-            BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(conn.getOutputStream(), StandardCharsets.UTF_8));
             String name = readName(reader);
             if (name == null) {
                 return;
             }
-            session = hub.connect(new TcpPeer(conn, writer), name);
+            // Lines are queued and written by their own thread, so a slow
+            // reader cannot hold up the room.
+            Outbound outbound = new Outbound(conn.getOutputStream());
+            outbound.start();
+            peer = new TcpPeer(conn, outbound);
+            session = hub.connect(peer, name);
             String line;
             while ((line = reader.readLine()) != null) {
                 String trimmed = line.strip();
@@ -113,6 +119,9 @@ public class ChatServer {
         } finally {
             if (session != null) {
                 hub.disconnect(session);
+            }
+            if (peer != null) {
+                peer.close();
             }
             try {
                 conn.close();

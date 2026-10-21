@@ -9,6 +9,7 @@
 #
 # Set SMOKE_PORT to move the ports (the default 5200 is used plus 0..3).
 set -u
+set +m # no job notifications when a background client finishes
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/_java.sh"
@@ -24,10 +25,7 @@ cleanup() {
     for pid in $PIDS; do
         kill "$pid" 2>/dev/null
     done
-    sleep 0.2
-    for pid in $PIDS; do
-        kill -9 "$pid" 2>/dev/null
-    done
+    sleep 0.5
     rm -rf "$WORK"
 }
 trap cleanup EXIT INT TERM
@@ -226,7 +224,32 @@ public class StrangerCheck {
 }
 JAVA
 
-if javac -d "$WORK/helpers" "$WORK/helpers/WsCheck.java" "$WORK/helpers/StrangerCheck.java" 2>"$WORK/compile.log"; then
+cat > "$WORK/helpers/QuietClient.java" <<'JAVA'
+import java.io.OutputStream;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+
+/**
+ * Connects, gives a name, and then never reads: the server's worst client,
+ * and the one that used to be able to hold the whole room up.
+ */
+public class QuietClient {
+    public static void main(String[] args) throws Exception {
+        int port = Integer.parseInt(args[0]);
+        String name = args[1];
+        try (Socket s = new Socket("127.0.0.1", port)) {
+            s.setTcpNoDelay(true);
+            OutputStream out = s.getOutputStream();
+            out.write((name + "\n").getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            Thread.sleep(60000);
+        }
+    }
+}
+JAVA
+
+if javac -d "$WORK/helpers" "$WORK/helpers/WsCheck.java" "$WORK/helpers/StrangerCheck.java" \
+        "$WORK/helpers/QuietClient.java" 2>"$WORK/compile.log"; then
     HELPERS=1
 else
     HELPERS=0
@@ -441,6 +464,38 @@ if ! wait_for "$WORK/re-server2.log" "listening on" 100; then
 fi
 check "the client comes back" "* reconnected to the server" "$WORK/resilient.log" 100
 check "the waiting message goes out" "resilient: while the server was away" "$WORK/resilient.log" 100
+
+# ------------------------------------------------------- slow clients ------
+printf '\nSlow clients\n'
+SLOW=$(start_server $((BASE + 5)) "$WORK/slow-server.log")
+PIDS="$PIDS $SLOW"
+wait_for "$WORK/slow-server.log" "listening on" 100 || true
+
+# A client that never reads: the server used to block the whole room on it.
+if [ "$HELPERS" = 1 ]; then
+    java -cp "$WORK/helpers" QuietClient $((BASE + 5)) quiet > "$WORK/quiet.log" 2>&1 &
+    PIDS="$PIDS $!"
+fi
+(
+    printf 'noisy\n'
+    sleep 1
+    # Long lines, so the backlog builds up quickly.
+    yes "$(awk 'BEGIN { s = ""; for (i = 0; i < 1000; i++) s = s "x"; print s }')" | head -5000
+    touch "$WORK/flooded"
+    sleep 3
+) | java -cp "$BUILD" ChatClient "$((BASE + 5))" > "$WORK/noisy.log" 2>&1 &
+PIDS="$PIDS $!"
+(
+    while [ ! -f "$WORK/flooded" ]; do
+        sleep 0.2
+    done
+    printf 'still here\n'
+    sleep 3
+) | java -cp "$BUILD" ChatClient --name other "$((BASE + 5))" > "$WORK/other2.log" 2>&1 &
+PIDS="$PIDS $!"
+
+check "the room keeps going while a client does not read" "other: still here" "$WORK/other2.log" 100
+check "a client that cannot keep up is dropped" "quiet left #lobby" "$WORK/slow-server.log" 100
 
 # ---------------------------------------------------------------- done ----
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
