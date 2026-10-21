@@ -37,7 +37,7 @@ spare port, drives the real client through it over TCP, UDP and WebSocket, and
 checks what each side printed. It exits non-zero if anything fails.
 
 ```sh
-scripts/smoke.sh              # 31 checks, about 20 seconds
+scripts/smoke.sh              # 33 checks, about 30 seconds
 SMOKE_PORT=5300 scripts/smoke.sh
 ```
 
@@ -137,9 +137,17 @@ look like a control line and make another client dial somewhere. The browser
 page and the UDP client never get control lines at all, and a client that was
 not started with `--p2p` ignores them.
 
+Each client also makes up a random secret when it starts and registers it with
+`/listen`. The server passes it to the peer as part of the introduction, and
+the two ends use it to identify each other: the peer will not let in a
+connection that cannot present the secret it was told to expect, and it will
+not talk to a peer that answers with the wrong one. So a process that finds the
+listener's address cannot walk in and claim somebody's name.
+
 This is a loopback demonstration, not a secure design: the advertised address is
-trusted as-is, there is no NAT traversal, and the direct channel is
-unauthenticated, so a local process could claim any name. The UDP client and the
+trusted as-is, there is no NAT traversal, the secret is only as good as the
+server that hands it out, and the direct channel carries the text in the
+clear, so a local process can still read the traffic. The UDP client and the
 browser page cannot hold a listener, so p2p applies to the TCP client only.
 
 ## Native build (optional, GraalVM)

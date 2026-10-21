@@ -11,6 +11,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -32,6 +33,33 @@ public class ChatClient {
 
     /** Whether this run can hold a listener and act on control lines. */
     private static boolean p2p;
+
+    /** The name this client asked for; the server may have changed it. */
+    private static String myName = "";
+
+    /**
+     * A secret this client presents to a peer, and expects back. It is what
+     * tells a genuine introduction apart from a stranger that found the
+     * listener's address.
+     */
+    private static final String TOKEN = randomToken();
+
+    /**
+     * Introductions this client is expecting, keyed by the secret the peer
+     * must present, with the peer's name as the value.
+     */
+    private static final ConcurrentHashMap<String, String> expected = new ConcurrentHashMap<>();
+
+    private static String randomToken() {
+        byte[] bytes = new byte[16];
+        new SecureRandom().nextBytes(bytes);
+        StringBuilder sb = new StringBuilder(32);
+        for (byte b : bytes) {
+            sb.append(Character.forDigit((b >> 4) & 0xF, 16));
+            sb.append(Character.forDigit(b & 0xF, 16));
+        }
+        return sb.toString();
+    }
 
     /** Guards stdout so lines from the server and from direct links do not interleave. */
     private static final Object OUT = new Object();
@@ -110,6 +138,7 @@ public class ChatClient {
                 chosen = "";
             }
         }
+        myName = chosen;
         byte[] payload = chosen.getBytes(StandardCharsets.UTF_8);
         sock.send(new DatagramPacket(payload, payload.length, server));
         if (room != null) {
@@ -168,12 +197,13 @@ public class ChatClient {
                     chosen = "";
                 }
             }
+            myName = chosen;
             BufferedWriter out = new BufferedWriter(new OutputStreamWriter(sock.getOutputStream(), StandardCharsets.UTF_8));
             out.write(chosen + "\n");
             out.flush();
 
             if (listener != null) {
-                out.write("/listen " + HOST + ":" + listener.getLocalPort() + "\n");
+                out.write("/listen " + HOST + ":" + listener.getLocalPort() + " " + TOKEN + "\n");
                 out.flush();
                 acceptLinks(listener);
             }
@@ -233,18 +263,43 @@ public class ChatClient {
         });
     }
 
-    /** An inbound link: the dialer sends its nick as the first line. */
+    /**
+     * An inbound link. The peer opens with its secret and its name; the secret
+     * has to be one the server told us to expect, or the connection is
+     * refused. A peer that brings no secret is an older client, and is taken
+     * at its word.
+     */
     private static void accept(Socket peer) {
         try {
             peer.setTcpNoDelay(true);
             BufferedReader in = new BufferedReader(new InputStreamReader(peer.getInputStream(), StandardCharsets.UTF_8));
             BufferedWriter out = new BufferedWriter(new OutputStreamWriter(peer.getOutputStream(), StandardCharsets.UTF_8));
-            String nick = in.readLine();
-            if (nick == null) {
+            String first = in.readLine();
+            if (first == null) {
                 peer.close();
                 return;
             }
-            nick = nick.strip();
+            first = first.strip();
+            int space = first.indexOf(' ');
+            String secret = space < 0 ? "" : first.substring(0, space);
+            String claimed = space < 0 ? first : first.substring(space + 1).strip();
+            if (secret.isEmpty()) {
+                // No secret: the peer only gave its name.
+                DirectLink link = new DirectLink(claimed, peer, out);
+                putLink(claimed, link);
+                say("* direct link from " + claimed + " established (messages now bypass the server)");
+                readLink(link, in);
+                return;
+            }
+            String nick = awaitIntroduction(secret);
+            if (nick == null) {
+                say("* refused a direct link: nobody introduced that peer");
+                peer.close();
+                return;
+            }
+            // Answer with our own secret, so both sides know who they are talking to.
+            out.write(TOKEN + " " + myName + "\n");
+            out.flush();
             DirectLink link = new DirectLink(nick, peer, out);
             putLink(nick, link);
             say("* direct link from " + nick + " established (messages now bypass the server)");
@@ -257,8 +312,33 @@ public class ChatClient {
         }
     }
 
-    /** An outbound link: announce our nick, then read. */
-    private static void dial(String me, String them, String hostPort) {
+    /**
+     * Waits for the server to introduce a peer presenting the given secret,
+     * and returns the name it gave. The connection can arrive a moment before
+     * the introduction does, so this waits a little.
+     */
+    private static String awaitIntroduction(String secret) {
+        long deadline = System.nanoTime() + 5_000_000_000L;
+        while (System.nanoTime() < deadline) {
+            String nick = expected.remove(secret);
+            if (nick != null) {
+                return nick;
+            }
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * An outbound link. The peer is told our secret first; it answers with
+     * its own, which has to be the one the server said to expect.
+     */
+    private static void dial(String me, String them, String hostPort, String theirSecret) {
         int colon = hostPort.lastIndexOf(':');
         if (colon < 0) {
             say("* could not open a direct link to " + them + ": bad address " + hostPort);
@@ -273,8 +353,26 @@ public class ChatClient {
                     Integer.parseInt(hostPort.substring(colon + 1))));
             BufferedWriter out = new BufferedWriter(new OutputStreamWriter(peer.getOutputStream(), StandardCharsets.UTF_8));
             BufferedReader in = new BufferedReader(new InputStreamReader(peer.getInputStream(), StandardCharsets.UTF_8));
-            out.write(me + "\n");
-            out.flush();
+            if (theirSecret.isEmpty()) {
+                // The peer does not authenticate: the old, plain handshake.
+                out.write(me + "\n");
+                out.flush();
+            } else {
+                out.write(TOKEN + " " + me + "\n");
+                out.flush();
+                String answer = in.readLine();
+                if (answer == null) {
+                    say("* could not open a direct link to " + them + ": the peer hung up");
+                    peer.close();
+                    return;
+                }
+                String[] parts = answer.strip().split(" ", 2);
+                if (parts.length < 2 || !parts[0].equals(theirSecret)) {
+                    say("* could not open a direct link to " + them + ": the peer did not identify itself");
+                    peer.close();
+                    return;
+                }
+            }
             DirectLink link = new DirectLink(them, peer, out);
             putLink(them, link);
             say("* direct link to " + them + " established (messages now bypass the server)");
@@ -328,18 +426,24 @@ public class ChatClient {
             return;
         }
         if (line.startsWith("link ")) {
-            String[] parts = line.split(" ", 4);
-            if (parts.length == 4) {
+            String[] parts = line.split(" ", 5);
+            if (parts.length >= 4) {
                 String me = parts[1];
                 String them = parts[2];
                 String address = parts[3];
-                Thread.ofVirtual().name("p2p-dial").start(() -> dial(me, them, address));
+                String secret = parts.length == 5 ? parts[4] : "";
+                Thread.ofVirtual().name("p2p-dial").start(() -> dial(me, them, address, secret));
             }
             return;
         }
         if (line.startsWith("link-incoming ")) {
-            String[] parts = line.split(" ", 3);
-            if (parts.length >= 2) {
+            String[] parts = line.split(" ", 4);
+            if (parts.length >= 3) {
+                // Remember the secret this peer has to present, so a stranger
+                // cannot walk in with a name of its own choosing.
+                if (parts.length == 4 && !parts[3].isEmpty()) {
+                    expected.put(parts[3], parts[1]);
+                }
                 say("* " + parts[1] + " is opening a direct link to you");
             }
         }

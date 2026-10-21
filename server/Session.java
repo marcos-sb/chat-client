@@ -16,7 +16,9 @@ final class Session {
     private volatile String nick;
     private volatile Room room;
     /** The {@code host:port} this client accepts direct links on, or null. */
-    private volatile String link;
+    private volatile String linkAddress;
+    /** The secret this client expects a peer to present, or null. */
+    private volatile String linkToken;
 
     Session(Peer peer, String nick, Room room) {
         this.peer = peer;
@@ -44,12 +46,20 @@ final class Session {
         this.room = room;
     }
 
-    String link() {
-        return link;
+    String linkAddress() {
+        return linkAddress;
     }
 
-    void link(String link) {
-        this.link = link;
+    void linkAddress(String linkAddress) {
+        this.linkAddress = linkAddress;
+    }
+
+    String linkToken() {
+        return linkToken;
+    }
+
+    void linkToken(String linkToken) {
+        this.linkToken = linkToken;
     }
 
     void send(String line) throws IOException {

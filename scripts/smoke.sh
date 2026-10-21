@@ -91,93 +91,11 @@ printf 'building...\n'
     exit 1
 }
 
-# ---------------------------------------------------------------- TCP -----
-printf '\nTCP\n'
-SERVER=$(start_server "$BASE" "$WORK/server.log")
-PIDS="$PIDS $SERVER"
-if ! wait_for "$WORK/server.log" "listening on" 100; then
-    echo "server did not start"
-    cat "$WORK/server.log"
-    exit 1
-fi
-
-# alice speaks first, bob joins after her.
-(
-    printf 'alice\n'
-    sleep 1
-    printf 'hello room\n'
-    sleep 1
-    printf '/who\n'
-    sleep 1
-    printf '/rooms\n'
-    sleep 1
-    printf '/nick zoe\n'
-    sleep 1
-    printf '/msg bob a private word\n'
-    sleep 1
-    printf '/help\n'
-    sleep 2
-) | java -cp "$BUILD" ChatClient "$BASE" > "$WORK/alice.log" 2>&1 &
-(
-    printf 'bob\n'
-    sleep 8
-) | java -cp "$BUILD" ChatClient "$BASE" > "$WORK/bob.log" 2>&1 &
-
-check "client is welcomed" "* welcome to #lobby" "$WORK/alice.log" 100
-check "room traffic reaches the other client" "alice: hello room" "$WORK/bob.log" 100
-check "joins are announced" "* alice joined #lobby" "$WORK/bob.log" 100
-check "/who lists the room" "*   bob" "$WORK/alice.log" 100
-check "/rooms lists the lobby" "#lobby" "$WORK/alice.log" 100
-check "/nick renames" "you are now known as \"zoe\"" "$WORK/alice.log" 100
-check "/msg reaches the peer" "[dm] zoe: a private word" "$WORK/bob.log" 100
-check "the server relays the private message" "[dm] to bob: a private word" "$WORK/alice.log" 100
-check "/help lists the client commands" "* client commands:" "$WORK/alice.log" 100
-check "/help still lists the server commands" "*   /join <room>      join or create a room" "$WORK/alice.log" 100
-
-# ---------------------------------------------------------------- flags ----
-printf '\nFlags\n'
-(
-    printf 'a message in the named room\n'
-    sleep 4
-) | java -cp "$BUILD" ChatClient --name scripted --room dev "$BASE" > "$WORK/scripted.log" 2>&1 &
-(
-    sleep 1
-    printf 'hello from the other side\n'
-    sleep 4
-) | java -cp "$BUILD" ChatClient --name other --room dev "$BASE" > "$WORK/other.log" 2>&1 &
-
-check "the client joins the room it was given" "* joined #dev" "$WORK/scripted.log" 100
-refute "the client does not prompt for a name" "Name: " "$WORK/scripted.log"
-check "the named client is reachable in its room" "scripted: a message in the named room" "$WORK/other.log" 100
-check "the other client is reachable in its room" "other: hello from the other side" "$WORK/scripted.log" 100
-
-# ---------------------------------------------------------------- UDP -----
-printf '\nUDP\n'
-UDP=$(start_server $((BASE + 1)) "$WORK/udp-server.log" -u)
-PIDS="$PIDS $UDP"
-wait_for "$WORK/udp-server.log" "listening on" 100 || true
-
-(
-    printf 'carol\n'
-    sleep 1
-    printf 'hello over udp\n'
-    sleep 3
-) | java -cp "$BUILD" ChatClient -u $((BASE + 1)) > "$WORK/carol.log" 2>&1 &
-(
-    printf 'dave\n'
-    sleep 6
-) | java -cp "$BUILD" ChatClient -u $((BASE + 1)) > "$WORK/dave.log" 2>&1 &
-
-check "udp client is welcomed" "* welcome to #lobby" "$WORK/carol.log" 100
-check "udp traffic reaches the other client" "carol: hello over udp" "$WORK/dave.log" 100
-
-# ---------------------------------------------------------- WebSocket -----
-printf '\nWebSocket\n'
-WS=$(start_server $((BASE + 2)) "$WORK/ws-server.log" -w)
-PIDS="$PIDS $WS"
-wait_for "$WORK/ws-server.log" "listening on" 100 || true
-
-cat > "$WORK/WsCheck.java" <<'JAVA'
+# Two helpers, compiled here and used below: one checks the browser page and
+# the WebSocket handshake, the other tries to walk into a direct link without
+# having been introduced.
+mkdir -p "$WORK/helpers"
+cat > "$WORK/helpers/WsCheck.java" <<'JAVA'
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -266,16 +184,143 @@ public class WsCheck {
 }
 JAVA
 
-if javac -d "$WORK" "$WORK/WsCheck.java" 2>"$WORK/ws-compile.log"; then
-    java -cp "$WORK" WsCheck $((BASE + 2)) > "$WORK/ws-check.log" 2>&1
+cat > "$WORK/helpers/StrangerCheck.java" <<'JAVA'
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
+
+/**
+ * Walks into a direct-link listener without having been introduced, and
+ * reports whether it was let in.
+ */
+public class StrangerCheck {
+    public static void main(String[] args) throws Exception {
+        int port = Integer.parseInt(args[0]);
+        try (Socket s = new Socket("127.0.0.1", port)) {
+            s.setSoTimeout(10000);
+            OutputStream out = s.getOutputStream();
+            out.write("deadbeefdeadbeefdeadbeefdeadbeef mallory\n".getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            InputStream in = s.getInputStream();
+            byte[] buf = new byte[64];
+            int n = in.read(buf);
+            if (n < 0) {
+                System.out.println("STRANGER-REFUSED");
+            } else {
+                System.out.println("STRANGER-ACCEPTED " + new String(buf, 0, n, StandardCharsets.UTF_8).trim());
+            }
+        } catch (SocketTimeoutException e) {
+            System.out.println("STRANGER-HUNG");
+        } catch (Exception e) {
+            System.out.println("STRANGER-REFUSED");
+        }
+    }
+}
+JAVA
+
+if javac -d "$WORK/helpers" "$WORK/helpers/WsCheck.java" "$WORK/helpers/StrangerCheck.java" 2>"$WORK/compile.log"; then
+    HELPERS=1
+else
+    HELPERS=0
+    bad "the check helpers compile"
+    dump "$WORK/compile.log"
+fi
+
+# ---------------------------------------------------------------- TCP -----
+printf '\nTCP\n'
+SERVER=$(start_server "$BASE" "$WORK/server.log")
+PIDS="$PIDS $SERVER"
+if ! wait_for "$WORK/server.log" "listening on" 100; then
+    echo "server did not start"
+    cat "$WORK/server.log"
+    exit 1
+fi
+
+# alice speaks first, bob joins after her.
+(
+    printf 'alice\n'
+    sleep 1
+    printf 'hello room\n'
+    sleep 1
+    printf '/who\n'
+    sleep 1
+    printf '/rooms\n'
+    sleep 1
+    printf '/nick zoe\n'
+    sleep 1
+    printf '/msg bob a private word\n'
+    sleep 1
+    printf '/help\n'
+    sleep 2
+) | java -cp "$BUILD" ChatClient "$BASE" > "$WORK/alice.log" 2>&1 &
+(
+    printf 'bob\n'
+    sleep 8
+) | java -cp "$BUILD" ChatClient "$BASE" > "$WORK/bob.log" 2>&1 &
+
+check "client is welcomed" "* welcome to #lobby" "$WORK/alice.log" 100
+check "room traffic reaches the other client" "alice: hello room" "$WORK/bob.log" 100
+check "joins are announced" "* alice joined #lobby" "$WORK/bob.log" 100
+check "/who lists the room" "*   bob" "$WORK/alice.log" 100
+check "/rooms lists the lobby" "#lobby" "$WORK/alice.log" 100
+check "/nick renames" "you are now known as \"zoe\"" "$WORK/alice.log" 100
+check "/msg reaches the peer" "[dm] zoe: a private word" "$WORK/bob.log" 100
+check "the server relays the private message" "[dm] to bob: a private word" "$WORK/alice.log" 100
+check "/help lists the client commands" "* client commands:" "$WORK/alice.log" 100
+check "/help still lists the server commands" "*   /join <room>      join or create a room" "$WORK/alice.log" 100
+
+# ---------------------------------------------------------------- flags ----
+printf '\nFlags\n'
+(
+    printf 'a message in the named room\n'
+    sleep 4
+) | java -cp "$BUILD" ChatClient --name scripted --room dev "$BASE" > "$WORK/scripted.log" 2>&1 &
+(
+    sleep 1
+    printf 'hello from the other side\n'
+    sleep 4
+) | java -cp "$BUILD" ChatClient --name other --room dev "$BASE" > "$WORK/other.log" 2>&1 &
+
+check "the client joins the room it was given" "* joined #dev" "$WORK/scripted.log" 100
+refute "the client does not prompt for a name" "Name: " "$WORK/scripted.log"
+check "the named client is reachable in its room" "scripted: a message in the named room" "$WORK/other.log" 100
+check "the other client is reachable in its room" "other: hello from the other side" "$WORK/scripted.log" 100
+
+# ---------------------------------------------------------------- UDP -----
+printf '\nUDP\n'
+UDP=$(start_server $((BASE + 1)) "$WORK/udp-server.log" -u)
+PIDS="$PIDS $UDP"
+wait_for "$WORK/udp-server.log" "listening on" 100 || true
+
+(
+    printf 'carol\n'
+    sleep 1
+    printf 'hello over udp\n'
+    sleep 3
+) | java -cp "$BUILD" ChatClient -u $((BASE + 1)) > "$WORK/carol.log" 2>&1 &
+(
+    printf 'dave\n'
+    sleep 6
+) | java -cp "$BUILD" ChatClient -u $((BASE + 1)) > "$WORK/dave.log" 2>&1 &
+
+check "udp client is welcomed" "* welcome to #lobby" "$WORK/carol.log" 100
+check "udp traffic reaches the other client" "carol: hello over udp" "$WORK/dave.log" 100
+
+# ---------------------------------------------------------- WebSocket -----
+printf '\nWebSocket\n'
+WS=$(start_server $((BASE + 2)) "$WORK/ws-server.log" -w)
+PIDS="$PIDS $WS"
+wait_for "$WORK/ws-server.log" "listening on" 100 || true
+
+if [ "$HELPERS" = 1 ]; then
+    java -cp "$WORK/helpers" WsCheck $((BASE + 2)) > "$WORK/ws-check.log" 2>&1
     check "the browser page is served" "PAGE-OK" "$WORK/ws-check.log" 100
     check "the browser page is the chat page" "TITLE-OK" "$WORK/ws-check.log" 100
     check "the websocket handshake succeeds" "WS-OK" "$WORK/ws-check.log" 100
     check "the websocket client is welcomed" "WELCOME-OK" "$WORK/ws-check.log" 100
     check "the server sees the websocket client" "wsuser connected" "$WORK/ws-server.log" 100
-else
-    bad "the websocket check helper compiles"
-    dump "$WORK/ws-compile.log"
 fi
 
 # -------------------------------------------------------------- p2p -------
@@ -294,7 +339,10 @@ wait_for "$WORK/p2p-server.log" "listening on" 100 || true
     printf '/links\n'
     sleep 1
     printf '/msg quinn direct-hello\n'
-    sleep 1
+    # The rest waits for the check below to take the server away.
+    while [ ! -f "$WORK/server-dead" ]; do
+        sleep 0.2
+    done
     printf '/msg quinn after-the-server-died\n'
     sleep 1
     printf '/unlink quinn\n'
@@ -306,7 +354,7 @@ wait_for "$WORK/p2p-server.log" "listening on" 100 || true
 ) | java -cp "$BUILD" ChatClient --p2p $((BASE + 3)) > "$WORK/pete.log" 2>&1 &
 (
     printf 'quinn\n'
-    sleep 14
+    sleep 20
 ) | java -cp "$BUILD" ChatClient --p2p $((BASE + 3)) > "$WORK/quinn.log" 2>&1 &
 
 check "the client advertises its listener" "* direct links enabled at" "$WORK/pete.log" 100
@@ -316,14 +364,30 @@ check "/links shows the open link" "* direct link to quinn (open)" "$WORK/pete.l
 check "the server brokers the introduction" "* pete is opening a direct link to you" "$WORK/quinn.log" 100
 check "the peer receives the direct message" "[dm] pete: direct-hello" "$WORK/quinn.log" 100
 
+# A process that finds the listener's address must not be able to walk in and
+# claim a name: it has no secret the server ever announced. This runs while
+# the client is still up and connected.
+if [ "$HELPERS" = 1 ]; then
+    LISTEN_PORT=$(sed -n 's/.*direct links enabled at 127.0.0.1:\([0-9]*\).*/\1/p' "$WORK/pete.log" | head -1)
+    if [ -n "$LISTEN_PORT" ]; then
+        java -cp "$WORK/helpers" StrangerCheck "$LISTEN_PORT" > "$WORK/stranger.log" 2>&1
+        check "a stranger without an introduction is refused" "STRANGER-REFUSED" "$WORK/stranger.log" 100
+        check "the client says it refused" "* refused a direct link" "$WORK/pete.log" 100
+    else
+        bad "the listener address is known"
+    fi
+fi
+
 # Kill the server. A direct link must not need it, and a message with no link
 # left cannot get through: together those prove the traffic really bypasses
 # the server rather than being relayed behind the client's back.
 kill "$P2P" 2>/dev/null
+touch "$WORK/server-dead"
 check "the direct message still arrives without the server" "[dm] pete: after-the-server-died" "$WORK/quinn.log" 100
 check "/unlink closes the link" "* direct link to quinn closed" "$WORK/pete.log" 100
 check "the peer sees the link go away" "* direct link with pete closed" "$WORK/quinn.log" 100
 refute "a message with no link and no server does not arrive" "after-the-unlink" "$WORK/quinn.log"
+
 
 # ---------------------------------------------------------------- done ----
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

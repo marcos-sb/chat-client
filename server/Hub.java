@@ -268,20 +268,24 @@ final class Hub {
     }
 
     /**
-     * Records where this client accepts direct connections. Sent automatically by
-     * a {@code --p2p} client; the server only relays the address, it never dials.
+     * Records where this client accepts direct connections, and the secret it
+     * expects a peer to present. Sent automatically by a {@code --p2p} client;
+     * the server only relays the details, it never dials.
      */
     private void listen(Session session, String rest) {
         if (!session.peer().supportsControl()) {
             reply(session, "* direct links need the TCP client (run it with --p2p)");
             return;
         }
-        String address = cleanAddress(rest);
-        if (address == null) {
-            reply(session, "* usage: /listen <host:port>");
+        int space = rest.indexOf(' ');
+        String address = cleanAddress(space < 0 ? rest : rest.substring(0, space));
+        String token = space < 0 ? "" : rest.substring(space + 1).strip();
+        if (address == null || (!token.isEmpty() && !validToken(token))) {
+            reply(session, "* usage: /listen <host:port> [token]");
             return;
         }
-        session.link(address);
+        session.linkAddress(address);
+        session.linkToken(token);
         reply(session, "* direct links enabled at " + address);
     }
 
@@ -307,8 +311,8 @@ final class Hub {
             reply(session, "* direct links need the TCP client on both sides");
             return;
         }
-        String mine = session.link();
-        String theirs = target.link();
+        String mine = session.linkAddress();
+        String theirs = target.linkAddress();
         if (mine == null) {
             reply(session, "* your client has not enabled direct links (run it with --p2p)");
             return;
@@ -317,11 +321,17 @@ final class Hub {
             reply(session, "* " + target.nick() + " has not enabled direct links");
             return;
         }
-        // The dialer gets who it is, who to reach, and where; the target is told
-        // who is about to connect. Control lines are prefixed so that a relayed
+        // Both sides can only authenticate each other if both brought a token.
+        // If either did not, the introduction falls back to the plain one.
+        boolean mutual = !session.linkToken().isEmpty() && !target.linkToken().isEmpty();
+        String theirToken = mutual ? target.linkToken() : "";
+        String myToken = mutual ? session.linkToken() : "";
+        // The dialer gets who it is, who to reach, where, and the secret the
+        // peer must present; the target is told who is about to connect and the
+        // secret it must expect. Control lines are prefixed so that a relayed
         // chat line can never be mistaken for one.
-        reply(session, CONTROL + "link " + session.nick() + " " + target.nick() + " " + theirs);
-        reply(target, CONTROL + "link-incoming " + session.nick() + " " + mine);
+        reply(session, CONTROL + "link " + session.nick() + " " + target.nick() + " " + theirs + " " + theirToken);
+        reply(target, CONTROL + "link-incoming " + session.nick() + " " + mine + " " + myToken);
     }
 
     // ---- delivery -------------------------------------------------------
@@ -440,6 +450,21 @@ final class Hub {
             return null;
         }
         return address.substring(0, colon) + ":" + port;
+    }
+
+    /** A secret is hex, and short enough to be a line's worth. */
+    private static boolean validToken(String token) {
+        if (token.isEmpty() || token.length() > 64) {
+            return false;
+        }
+        for (int i = 0; i < token.length(); i++) {
+            char c = token.charAt(i);
+            boolean hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!hex) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static String memberCount(Room room) {
